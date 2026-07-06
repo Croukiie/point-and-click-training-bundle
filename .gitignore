@@ -36,6 +36,17 @@ build/
 dist/
 *.exe
 
+# Web visualizer and Docker/Hugging Face deployment
+Dockerfile
+.dockerignore
+requirements-web.txt
+run_visualizer_web.bat
+publish_visualizer_online.bat
+visualize_policy_web_launcher.py
+scripts/publish_huggingface_space.py
+src/rl/visualize_policy_web.py
+src/rl/web/
+
 # Training, inference, model and dataset outputs
 # Keep these outside normal Git history; use Git LFS for selected models.
 data/
