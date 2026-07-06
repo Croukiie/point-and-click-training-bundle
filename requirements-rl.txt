@@ -1,0 +1,14 @@
+numpy==1.26.4
+scipy>=1.10
+PyYAML>=6.0
+python-box>=7.0
+opencv-python-headless==4.8.1.78
+gymnasium==1.0.0
+stable-baselines3==2.4.1
+torch>=2.2,<2.4
+tensorboard>=2.15
+psutil>=5.9
+tqdm>=4.66
+rich>=13.0
+matplotlib>=3.8
+Pillow>=10.0

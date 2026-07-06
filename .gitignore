@@ -1,0 +1,56 @@
+# Python caches and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and package caches
+.venv/
+.venv_*/
+venv/
+env/
+.uv-cache/
+pip-wheel-metadata/
+*.egg-info/
+
+# Local secrets and environment variables
+.env
+.env.*
+!.env.example
+
+# IDE and local assistant files
+.vscode/
+.idea/
+.agents/
+.codex/
+*.code-workspace
+*.swp
+*~
+
+# Generated builds and executables
+build/
+dist/
+*.exe
+
+# Training, inference, model and dataset outputs
+# Keep these outside normal Git history; use Git LFS for selected models.
+data/
+tb_log/
+runs/
+wandb/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.pid
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+desktop.ini

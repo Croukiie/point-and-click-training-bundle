@@ -1,0 +1,443 @@
+simulator:
+  mouse_converge_best:
+    model_name: pnc_mouse_converge_26185ENND
+    ckpt: best
+    traj_downsample: 20
+    simul_option: default
+    fix_per_param: []
+
+  default:
+    model_name: PnCClassicClick_25197EXSJ
+    ckpt: 10000000
+    traj_downsample: 20
+    simul_option: default
+    fix_per_param: []
+  
+  default_cond:
+    model_name: PnCClassicClick_25197EXSJ
+    ckpt: 10000000
+    traj_downsample: 20
+    simul_option: default
+    fix_per_param: []
+    main_param: ["theta_m", "theta_c"]
+    sub_param: ["rew_succ", "rew_fail", "time_penalty", "effort_cost"]
+  
+  default_lv2_cond:
+    model_name: PnCClscSymSclEff_25184CVQZ
+    ckpt: 5000000
+    traj_downsample: 20
+    simul_option: rewperchalf16
+    fix_per_param: []
+    main_param: ["theta_m", "theta_c", "theta_r"]
+    sub1_param: ["rew_succ_0"]
+    sub2_param: ["rew_succ", "fail_scale", "time_penalty", "effort_cost"]
+
+normalize:
+  default:
+    stat:
+      list: [
+        movement_time,
+        target_hit,
+        click_distance,
+        target_rel_pos_x0,
+        target_rel_pos_y0,
+        click_rel_endpoint_x,
+        click_rel_endpoint_y,
+        target_radius,
+        target_distance,
+      ]
+      range:
+        movement_time:
+          min: -3
+          max: 3
+        target_hit:
+          min: 0
+          max: 1
+        click_distance:
+          min: -0.3
+          max: 0.3
+        window_width:
+          min: -1
+          max: 1
+        cursor_pos_x0:
+          min: -1
+          max: 1
+        cursor_pos_y0:
+          min: -1
+          max: 1
+        target_rel_pos_x0:
+          min: -1
+          max: 1
+        target_rel_pos_y0:
+          min: -1
+          max: 1
+        target_radius:
+          min: -0.1
+          max: 0.1
+        traverse_length:
+          min: -1
+          max: 1
+        max_cursor_speed:
+          min: -5.0
+          max: 5.0
+        click_rel_endpoint_x:
+          min: -0.3
+          max: 0.3
+        click_rel_endpoint_y:
+          min: -0.3
+          max: 0.3
+        target_index_of_difficulty:
+          min: -6.5
+          max: 6.5
+        target_distance:
+          min: -0.6
+          max: 0.6
+        target_rew:
+          min: -10.0
+          max: 10.0
+    
+    stat_mean:
+      list: [
+        movement_time,
+        target_hit,
+      ]
+      ignore_statmean: true
+
+    traj:
+      list: [
+        timediff,
+        target_rel_pos_x,
+        target_rel_pos_y
+      ]
+      ignore_traj: true
+      range:
+        timestamp:
+          min: -3
+          max: 3
+        timediff:
+          min: -1
+          max: 1
+        target_pos_x:
+          min: -1
+          max: 1
+        target_pos_y:
+          min: -1
+          max: 1
+        cursor_pos_x:
+          min: -1
+          max: 1
+        cursor_pos_y:
+          min: -1
+          max: 1
+        target_rel_pos_x:
+          min: -1
+          max: 1
+        target_rel_pos_y:
+          min: -1
+          max: 1
+
+    option:
+      remove_reaction: True
+
+
+training:
+  default:
+    learning_rate: 0.0001
+    lr_gamma: 0.9
+    clipping: 0.5
+    point_estimation: True
+
+    amortizer:
+      device: null
+      trial_encoder_type: attention
+
+      encoder:
+        traj_sz: null
+        stat_sz: null   # These should be set explicitly. Set this as the number of features
+        batch_norm: True
+        traj_encoder_type: transformer  # ["transformer", "conv_rnn"]
+
+        transformer:     # Trajectory processor
+          num_latents: 4
+          n_block: 2
+          query_sz: 16   # 8~16
+          out_sz: 4     # 8~16
+          head_sz: 8
+          n_head: 4
+          attn_dropout: 0.4 # 0.2~0.4 if low, training may be unstable
+          res_dropout: 0.4
+          max_freq: 10
+          n_freq_bands: 2
+          max_step: null  # This should be set explicitly. Set this as the maximum length of traj.
+        
+        conv1d: []
+        rnn:   # Trajectory
+          type: LSTM
+          bidirectional: True
+          dropout: 0.2
+          feat_sz: 8
+          depth: 2
+
+        mlp:  # Static
+          feat_sz: 256   # 64~128
+          out_sz: 64    # mlp out_sz : encoder out_sz -> reliability weight of data (stat, traj)
+          depth: 2
+
+
+      trial_encoder:
+        attention:
+          num_latents: 4
+          n_block: 2
+          query_sz: 32
+          out_sz: 32
+          head_sz: 8
+          n_head: 4
+          attn_dropout: 0.4
+          res_dropout: 0.4
+
+
+      invertible:
+        param_sz: null  # This should be set explicitly. Set this as the number of parameters
+        n_block: 5
+        act_norm: True
+        invert_conv: True
+        batch_norm: False
+        block:
+          permutation: False
+          head_depth: 2
+          head_sz: 32
+          cond_sz: null   # This should be set explicitly. Set this as the trial_encoder output
+          feat_sz: 32
+          depth: 2
+      
+
+      linear:
+        out_sz: null  # This should be set explicitly. Set this as the number of parameters
+        in_sz: null   # trial_encoder.out_sz
+        hidden_sz: 128
+        hidden_depth: 2
+        batch_norm: False
+        activation: relu
+
+      # One weight per inferred parameter. Equal weighting is used for the
+      # nine cognitive, reward, cost, and physical-mouse parameters.
+      loss_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+  
+  default_cond:
+    learning_rate: 0.0001
+    lr_gamma: 0.9
+    clipping: 0.5
+    point_estimation: True
+
+    amortizer:
+      device: null
+      trial_encoder_type: attention
+
+      encoder:
+        traj_sz: null
+        stat_sz: null   # These should be set explicitly. Set this as the number of features
+        batch_norm: True
+        traj_encoder_type: transformer  # ["transformer", "conv_rnn"]
+
+        transformer:     # Trajectory processor
+          num_latents: 4
+          n_block: 2
+          query_sz: 16   # 8~16
+          out_sz: 4     # 8~16
+          head_sz: 8
+          n_head: 4
+          attn_dropout: 0.4 # 0.2~0.4 if low, training may be unstable
+          res_dropout: 0.4
+          max_freq: 10
+          n_freq_bands: 2
+          max_step: null  # This should be set explicitly. Set this as the maximum length of traj.
+        
+        conv1d: []
+        rnn:   # Trajectory
+          type: LSTM
+          bidirectional: True
+          dropout: 0.2
+          feat_sz: 8
+          depth: 2
+
+        mlp:  # Static
+          feat_sz: 128   # 64~128
+          out_sz: 64    # mlp out_sz : encoder out_sz -> reliability weight of data (stat, traj)
+          depth: 2
+
+
+      trial_encoder:
+        attention:
+          num_latents: 4
+          n_block: 2
+          query_sz: 32
+          out_sz: 32
+          head_sz: 8
+          n_head: 4
+          attn_dropout: 0.4
+          res_dropout: 0.4
+
+
+      invertible_main:
+        param_sz: null  # This should be set explicitly. Set this as the number of parameters
+        n_block: 5
+        act_norm: True
+        invert_conv: True
+        batch_norm: False
+        block:
+          permutation: False
+          head_depth: 2
+          head_sz: 16
+          cond_sz: null  # This should be set explicitly. Set this as the trial_encoder output
+          feat_sz: 16
+          depth: 2
+      
+      invertible_sub:
+        param_sz: null  # This should be set explicitly. Set this as the number of parameters
+        n_block: 5
+        act_norm: True
+        invert_conv: True
+        batch_norm: False
+        block:
+          permutation: False
+          head_depth: 2
+          head_sz: 16
+          cond_sz: null   # This should be set explicitly. Set this as the trial_encoder output + d_main_param
+          feat_sz: 16
+          depth: 2
+
+      posterior_encoder:
+        num_sample: 300
+        attention:
+          num_latents: 4
+          n_block: 2
+          query_sz: 16
+          out_sz: 16
+          head_sz: 8
+          n_head: 4
+          attn_dropout: 0.4
+          res_dropout: 0.4
+
+      linear_main:
+        out_sz: null  # This should be set explicitly. Set this as the number of main parameters
+        in_sz: null   # trial_encoder.out_sz
+        hidden_sz: 128
+        hidden_depth: 2
+        batch_norm: False
+        activation: relu
+      
+      linear_sub:
+        out_sz: null  # This should be set explicitly. Set this as the number of sub parameters
+        in_sz: null   # trial_encoder.out_sz + # of main parameters
+        hidden_sz: 128
+        hidden_depth: 2
+        batch_norm: False
+        activation: relu
+      
+      concat_feature_vector: false
+      
+      loss_weight:
+        main_param: [1.0, 1.0]
+        sub_param: [4.0, 4.0, 1.0, 1.0]
+        main_log_det_J_weight: 0.0001
+  
+
+  default_lv2_cond:
+    learning_rate: 0.0001
+    lr_gamma: 0.9
+    clipping: 0.5
+    point_estimation: True
+
+    amortizer:
+      device: null
+      trial_encoder_type: attention
+
+      encoder:
+        traj_sz: null
+        stat_sz: null   # These should be set explicitly. Set this as the number of features
+        batch_norm: True
+        traj_encoder_type: transformer  # ["transformer", "conv_rnn"]
+
+        transformer:     # Trajectory processor
+          num_latents: 4
+          n_block: 2
+          query_sz: 16   # 8~16
+          out_sz: 4     # 8~16
+          head_sz: 8
+          n_head: 4
+          attn_dropout: 0.4 # 0.2~0.4 if low, training may be unstable
+          res_dropout: 0.4
+          max_freq: 10
+          n_freq_bands: 2
+          max_step: null  # This should be set explicitly. Set this as the maximum length of traj.
+        
+        conv1d: []
+        rnn:   # Trajectory
+          type: LSTM
+          bidirectional: True
+          dropout: 0.2
+          feat_sz: 8
+          depth: 2
+
+        mlp:  # Static
+          feat_sz: 128   # 64~128
+          out_sz: 64    # mlp out_sz : encoder out_sz -> reliability weight of data (stat, traj)
+          depth: 2
+
+
+      trial_encoder:
+        attention:
+          num_latents: 4
+          n_block: 2
+          query_sz: 32
+          out_sz: 32
+          head_sz: 8
+          n_head: 4
+          attn_dropout: 0.4
+          res_dropout: 0.4
+
+
+      invertible:
+        param_sz: null  # This should be set explicitly. Set this as the number of parameters
+        n_block: 5
+        act_norm: True
+        invert_conv: True
+        batch_norm: False
+        block:
+          permutation: False
+          head_depth: 2
+          head_sz: 32
+          cond_sz: 32
+          feat_sz: 32
+          depth: 2
+      
+
+      linear_main:
+        out_sz: null  # This should be set explicitly. Set this as the number of main parameters
+        in_sz: null   # trial_encoder.out_sz
+        hidden_sz: 128
+        hidden_depth: 2
+        batch_norm: False
+        activation: relu
+      
+      linear_sub1:
+        out_sz: null  # This should be set explicitly. Set this as the number of sub parameters
+        in_sz: null   # trial_encoder.out_sz + # of main parameters
+        hidden_sz: 128
+        hidden_depth: 2
+        batch_norm: False
+        activation: relu
+      
+      linear_sub2:
+        out_sz: null  # This should be set explicitly. Set this as the number of sub parameters
+        in_sz: null   # trial_encoder.out_sz + # of main parameters + # of sub1 parameters
+        hidden_sz: 128
+        hidden_depth: 2
+        batch_norm: False
+        activation: relu
+      
+      loss_weight:
+        main_param: 2.0
+        sub1_param: 1.0
+        sub2_param: 3.0

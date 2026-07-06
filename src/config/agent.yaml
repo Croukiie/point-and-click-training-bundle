@@ -1,0 +1,407 @@
+reactions:  # Millisec
+  default:  
+    hand:
+      type: uniform   # uniform, log-uniform, normal, skew-normal, ...
+      max: 400
+      min: 100
+
+observations:
+  default:
+    list: [cursor_pos, cursor_vel, target_pos, target_rad, elapsed_time, hand_pos, hand_vel, mouse_ori]
+    cursor_pos:
+      max: [0.3, 0.3]
+      min: [-0.3, -0.3]
+    target_pos:
+      max: [0.3, 0.3]
+      min: [-0.3, -0.3]
+    target_rad:
+      max: [0.1]
+      min: [-0.1]
+    cursor_vel:
+      max: [5.0, 5.0]
+      min: [-5.0, -5.0]
+    target_rew:
+      max: [10.0]
+      min: [-10.0]
+    elapsed_time:
+      max: [3.0]
+      min: [-3.0]
+    hand_pos:
+      max: [0.3, 0.3]
+      min: [-0.3, -0.3]
+    hand_vel:
+      max: [1.5, 1.5]
+      min: [-1.5, -1.5]
+    mouse_ori:
+      max: [1.0, 1.0]
+      min: [-1.0, -1.0]
+  
+actions:
+  default:
+    list: [th, kc, tc]
+    th:   # Millisec
+      max: 2000
+      min: 100
+    kc:
+      threshold: 0.8
+      max: 1.0
+      min: 0.0
+    tc:
+      max: 1.0
+      min: 0.0
+  
+  icp:
+    list: [th, kc]
+    th:   # Millisec
+      max: 2000
+      min: 100
+    kc:
+      threshold: 0.8
+      max: 1.0
+      min: 0.0
+
+  extended_icp:
+    list: [th, kc]
+    th:   # Millisec
+      max: 2000
+      min: 100
+    kc:
+      threshold: [0.8, 0.9]
+      max: 1.0
+      min: 0.0
+
+  
+classic_real:
+  max_hand_speed: 1.0   # m/s
+  truncate_time: 3000   # Millisec
+  truncate_penalty: -100
+  reaction: default
+  observation: default
+  action: icp
+  click_periods:
+    type: normal
+    min: 500
+    max: 2800
+    mean: 1617
+    std: 355
+  button_press_delay: 100
+
+  param_const:
+    theta_s: 0
+    include_ring_time: 0.0
+    nu: 19.931
+    theta_n: 0.192
+    c_mu: 0.185
+    rew_const: 0.0
+  param_modul:
+    list: [theta_m, theta_c, delta, rew_succ, rew_fail, time_penalty, effort_cost, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    theta_m:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    theta_c:
+      type: uniform
+      max: 0.30
+      min: 0.01
+    delta:
+      type: uniform
+      max: 0.5
+      min: 0.01
+    rew_succ:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    rew_fail:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    time_penalty:
+      type: uniform
+      max: 32.0
+      min: 0.0
+      sample_min_prob: 0.01
+    effort_cost:
+      type: uniform
+      max: 32.0
+      min: 0.0
+      sample_min_prob: 0.01
+    mouse_rotation_gain_x:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_rotation_gain_y:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_plan_correction:
+      type: uniform
+      max: 1.0
+      min: 0.0
+
+
+
+classic:
+  max_hand_speed: 1.0   # m/s
+  truncate_time: 3000   # Millisec
+  truncate_penalty: -100
+  reaction: default
+  observation: default
+  action: default
+
+  param_const:
+    theta_s: 0
+    include_ring_time: 0.0
+    theta_n: 0.192
+  param_modul:
+    list: [theta_m, theta_c, rew_succ, rew_fail, time_penalty, effort_cost, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    theta_m:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    theta_c:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    rew_succ:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    rew_fail:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    time_penalty:
+      type: uniform
+      max: 32.0
+      min: 0.0
+      sample_min_prob: 0.01
+    effort_cost:
+      type: uniform
+      max: 32.0
+      min: 0.0
+      sample_min_prob: 0.01
+    mouse_rotation_gain_x:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_rotation_gain_y:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_plan_correction:
+      type: uniform
+      max: 1.0
+      min: 0.0
+
+
+
+classic_no_effort:
+  max_hand_speed: 1.0   # m/s
+  truncate_time: 3000   # Millisec
+  truncate_penalty: -100
+  reaction: default
+  observation: default
+  action: default
+
+  param_const:
+    theta_s: 0
+    include_ring_time: 0.0
+    theta_n: 0.192
+    effort_cost: 0
+  param_modul:
+    list: [theta_m, theta_c, rew_succ, rew_fail, time_penalty, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    theta_m:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    theta_c:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    rew_succ:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    rew_fail:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    time_penalty:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    mouse_rotation_gain_x:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_rotation_gain_y:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_plan_correction:
+      type: uniform
+      max: 1.0
+      min: 0.0
+
+
+classic_symmetric:
+  max_hand_speed: 1.0   # m/s
+  truncate_time: 3000   # Millisec
+  truncate_penalty: -100
+  reaction: default
+  observation: default
+  action: default
+
+  param_const:
+    theta_s: 0
+    include_ring_time: 0.0
+    theta_n: 0.192
+    effort_cost: 0.0
+    fail_scale: 1.0
+  param_modul:
+    list: [theta_m, theta_c, rew_succ, time_penalty, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    theta_m:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    theta_c:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    rew_succ:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    time_penalty:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    mouse_rotation_gain_x:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_rotation_gain_y:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_plan_correction:
+      type: uniform
+      max: 1.0
+      min: 0.0
+
+
+classic_symmetric_scale:
+  max_hand_speed: 1.0   # m/s
+  truncate_time: 3000   # Millisec
+  truncate_penalty: -100
+  reaction: default
+  observation: default
+  action: default
+
+  param_const:
+    theta_s: 0
+    include_ring_time: 0.0
+    theta_n: 0.192
+    effort_cost: 0.0
+  param_modul:
+    list: [theta_m, theta_c, rew_succ, fail_scale, time_penalty, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    theta_m:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    theta_c:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    rew_succ:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    fail_scale:
+      type: uniform
+      max: 2.0
+      min: 0.0
+    time_penalty:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    mouse_rotation_gain_x:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_rotation_gain_y:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_plan_correction:
+      type: uniform
+      max: 1.0
+      min: 0.0
+
+
+
+
+classic_symmscale_effort:
+  max_hand_speed: 1.0   # m/s
+  truncate_time: 3000   # Millisec
+  truncate_penalty: -100
+  reaction: default
+  observation: default
+  action: default
+
+  param_const:
+    theta_s: 0
+    include_ring_time: 0.0
+    theta_n: 0.192
+  param_modul:
+    list: [theta_m, theta_c, rew_succ, fail_scale, time_penalty, effort_cost, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    theta_m:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    theta_c:
+      type: uniform
+      max: 0.40
+      min: 0.05
+    rew_succ:
+      type: uniform
+      max: 16.0
+      min: 0.0
+      sample_min_prob: 0.01
+    fail_scale:
+      type: uniform
+      max: 2.0
+      min: 0.0
+    time_penalty:
+      type: uniform
+      max: 32.0
+      min: 0.0
+      sample_min_prob: 0.01
+    effort_cost:
+      type: uniform
+      max: 32.0
+      min: 0.0
+      sample_min_prob: 0.01
+    mouse_rotation_gain_x:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_rotation_gain_y:
+      type: uniform
+      max: 10.0
+      min: -10.0
+    mouse_plan_correction:
+      type: uniform
+      max: 1.0
+      min: 0.0

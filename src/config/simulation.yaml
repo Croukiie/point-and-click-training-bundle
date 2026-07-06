@@ -1,0 +1,95 @@
+# Unit: millisec
+interval:
+  default:
+    muscle: 50
+    bump: 100
+    interp: 1
+
+
+simul_option:
+  default:
+    func: obs_manipulation_none
+    param:
+      list: []
+
+  rewperc:
+    func: obs_manipulation_reward_perception
+    param:
+      list: [theta_r, rew_succ_0, rew_fail_0]
+      theta_r:
+        type: uniform
+        max: 300
+        min: 100
+      rew_succ_0:
+        type: uniform
+        target: rew_succ
+        max: 64
+        min: 0
+      rew_fail_0:
+        type: uniform
+        target: rew_fail
+        max: 64
+        min: 0
+  
+  rewperchalf:
+    func: obs_manipulation_reward_perception
+    param:
+      list: [theta_r, rew_succ_0]
+      theta_r:
+        type: uniform
+        max: 300
+        min: 100
+      rew_succ_0:
+        type: uniform
+        target: rew_succ
+        max: 64
+        min: 0
+  
+
+  rewperc16:
+    func: obs_manipulation_reward_perception
+    param:
+      list: [theta_r, rew_succ_0, rew_fail_0]
+      theta_r:
+        type: uniform
+        max: 400
+        min: 100
+      rew_succ_0:
+        type: uniform
+        target: rew_succ
+        max: 16
+        min: 0
+      rew_fail_0:
+        type: uniform
+        target: rew_fail
+        max: 16
+        min: 0
+  
+  rewperchalf16:
+    func: obs_manipulation_reward_perception
+    param:
+      list: [theta_r, rew_succ_0]
+      theta_r:
+        type: uniform
+        max: 400
+        min: 100
+      rew_succ_0:
+        type: uniform
+        target: rew_succ
+        max: 16
+        min: 0
+  
+
+  rewperchalf32:
+    func: obs_manipulation_reward_perception
+    param:
+      list: [theta_r, rew_succ_0]
+      theta_r:
+        type: uniform
+        max: 400
+        min: 100
+      rew_succ_0:
+        type: uniform
+        target: rew_succ
+        max: 32
+        min: 0
