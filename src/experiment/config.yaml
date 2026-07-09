@@ -1,0 +1,34 @@
+experiment:
+  name: pnc_cpi_study
+  refresh_hz: 240
+  timeout_s: 3.0
+  inter_trial_s: 0.30
+  feedback_s: 0.20
+  practice_trials_per_cpi: 15
+  measured_trials_per_cpi: 128
+  cpi_values: [400, 800, 1600]
+  mouse_gain: 4.16
+  target_id_range: [2.5, 7.2]
+  seed: 20260708
+
+display:
+  profile_name: 24_inch_full_hd
+  enforce_fixed_profile: false
+  warn_if_not_fixed_profile: true
+  physical_tolerance_cm: 1.5
+  resolution_px: [1920, 1080]
+  physical_size_m: [0.530, 0.300]
+  virtual_size_m: [0.600, 0.3375]
+
+logging:
+  expected_mouse_polling_hz: 1000
+  writer_queue_size: 12
+
+appearance:
+  background_rgb: [24, 27, 33]
+  target_rgb: [235, 106, 93]
+  cursor_rgb: [104, 205, 255]
+  success_rgb: [104, 211, 145]
+  failure_rgb: [240, 184, 86]
+  text_rgb: [230, 232, 236]
+  cursor_radius_px: 5

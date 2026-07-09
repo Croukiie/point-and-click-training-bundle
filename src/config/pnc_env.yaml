@@ -36,6 +36,106 @@ default:
       uniform: True
 
 
+cpi_24inch:
+  # Measured active display: 530 mm wide. The simulator preserves its 16:9
+  # coordinate system, giving a 298.125 mm active task height.
+  mouse_gain: 4.35
+  mouse_mapping: rotational
+  mouse_rotation_gain_x: -3.0
+  mouse_rotation_gain_y: 0.0
+  mouse_plan_correction: 0.0
+  range:
+    window_width:
+      max: 0.53
+      min: 0.53
+    target:
+      radius:
+        max: 0.007
+        min: 0.00125
+      speed:
+        max: 0.0
+        min: 0.0
+      id:
+        min: 2.5
+        max: 7.2
+  option:
+    speed:
+      sample_min_prob: 0.0
+    pos:
+      min_dist_to_cursor: 0.005
+    id:
+      uniform: True
+
+
+cpi_variable:
+  # Preserve both the original task size and its control-display gain. CPI is
+  # modelled separately as the physical resolution of the mouse sensor.
+  mouse_gain: 4.16
+  mouse_cpi: 800.0
+  mouse_mapping: rotational
+  mouse_rotation_gain_x: -3.0
+  mouse_rotation_gain_y: 0.0
+  mouse_plan_correction: 0.0
+  range:
+    window_width:
+      max: 0.6
+      min: 0.6
+    target:
+      radius:
+        max: 0.007
+        min: 0.00125
+      speed:
+        max: 0.0
+        min: 0.0
+      id:
+        min: 2.5
+        max: 7.2
+  option:
+    speed:
+      sample_min_prob: 0.0
+    pos:
+      min_dist_to_cursor: 0.005
+    id:
+      uniform: True
+
+
+cpi_24inch_variable:
+  # Fixed 24 inch Full HD task. A 24 inch 16:9 display is approximately
+  # 530 mm wide; the simulator keeps the 16:9 ratio, so the active task
+  # height is about 298 mm.
+  #
+  # CPI is modelled separately from the control-display gain: mouse_gain keeps
+  # the physical hand-to-screen mapping, while mouse_cpi controls raw sensor
+  # count quantization.
+  mouse_gain: 4.35
+  mouse_cpi: 800.0
+  mouse_mapping: rotational
+  mouse_rotation_gain_x: -3.0
+  mouse_rotation_gain_y: 0.0
+  mouse_plan_correction: 0.0
+  range:
+    window_width:
+      max: 0.53
+      min: 0.53
+    target:
+      radius:
+        max: 0.007
+        min: 0.00125
+      speed:
+        max: 0.0
+        min: 0.0
+      id:
+        min: 2.5
+        max: 7.2
+  option:
+    speed:
+      sample_min_prob: 0.0
+    pos:
+      min_dist_to_cursor: 0.005
+    id:
+      uniform: True
+
+
 static_target:
   mouse_gain: 1
   mouse_mapping: rotational

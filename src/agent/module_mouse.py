@@ -90,25 +90,26 @@ class Mouse:
         mouse_orientation,
         rotation_gain_x_deg_per_cm=-3.0,
         rotation_gain_y_deg_per_cm=0.0,
+        mouse_cpi=None,
+        count_residual=None,
+        return_count_residual=False,
     ):
-        hand_delta = np.array(hand_end_loc) - np.array(hand_start_loc)
-        rotation_delta = np.deg2rad(
-            (rotation_gain_x_deg_per_cm * hand_delta[0]
-             + rotation_gain_y_deg_per_cm * hand_delta[1]) * 100
+        hand_delta = np.asarray(hand_end_loc) - np.asarray(hand_start_loc)
+        result = Mouse.get_cursor_displacements_from_desk_rotation(
+            hand_delta[np.newaxis, :],
+            cursor_gain,
+            mouse_orientation,
+            rotation_gain_x_deg_per_cm,
+            rotation_gain_y_deg_per_cm,
+            mouse_cpi,
+            count_residual=count_residual,
+            return_count_residual=return_count_residual,
         )
-        next_mouse_orientation = mouse_orientation + rotation_delta
-
-        if np.allclose(hand_delta, 0):
-            return np.zeros(2), next_mouse_orientation
-
-        if np.isclose(rotation_delta, 0):
-            scale = 1.0
-        else:
-            scale = 2 * np.sin(rotation_delta / 2) / rotation_delta
-
-        sensor_rotation = -(mouse_orientation + rotation_delta / 2)
-        cursor_delta = cursor_gain * scale * Mouse.rot_mat(hand_delta, sensor_rotation)
-        return cursor_delta, next_mouse_orientation
+        if return_count_residual:
+            cursor_deltas, next_orientations, next_residual = result
+            return cursor_deltas[0], next_orientations[0], next_residual
+        cursor_deltas, next_orientations = result
+        return cursor_deltas[0], next_orientations[0]
 
     @staticmethod
     def get_cursor_displacements_from_desk_rotation(
@@ -117,6 +118,9 @@ class Mouse:
         mouse_orientation,
         rotation_gain_x_deg_per_cm=-3.0,
         rotation_gain_y_deg_per_cm=0.0,
+        mouse_cpi=None,
+        count_residual=None,
+        return_count_residual=False,
     ):
         """Vectorized rotational mapping for one or more hand trajectories.
 
@@ -148,17 +152,55 @@ class Mouse:
         )
 
         sensor_rotations = -(previous_orientations + rotation_deltas / 2)
-        cursor_deltas = (
-            cursor_gain
-            * scales[..., np.newaxis]
+        sensor_displacements = (
+            scales[..., np.newaxis]
             * Mouse.rot_mat(hand_deltas, sensor_rotations)
         )
+        residual_shape = sensor_displacements.shape[:-2] + (2,)
+        next_count_residual = (
+            np.zeros(residual_shape, dtype=sensor_displacements.dtype)
+            if count_residual is None
+            else np.broadcast_to(
+                np.asarray(count_residual, dtype=sensor_displacements.dtype),
+                residual_shape,
+            ).copy()
+        )
+        if mouse_cpi is not None:
+            cpi = np.asarray(mouse_cpi)
+            if np.any(cpi <= 0):
+                raise ValueError("mouse_cpi must be positive")
+            while cpi.ndim < sensor_displacements.ndim:
+                cpi = cpi[..., np.newaxis]
+            raw_counts = sensor_displacements * cpi / 0.0254
+
+            # A physical sensor retains fractional motion until it crosses a
+            # count boundary. Rounding every segment independently creates a
+            # dead zone in which slow movements disappear completely.
+            if raw_counts.shape[-2] > 0:
+                cumulative_counts = (
+                    np.cumsum(raw_counts, axis=-2)
+                    + next_count_residual[..., np.newaxis, :]
+                )
+                quantized_cumulative = np.rint(cumulative_counts)
+                initial_counts = np.zeros_like(quantized_cumulative[..., :1, :])
+                count_deltas = np.diff(
+                    np.concatenate((initial_counts, quantized_cumulative), axis=-2),
+                    axis=-2,
+                )
+                next_count_residual = (
+                    cumulative_counts[..., -1, :]
+                    - quantized_cumulative[..., -1, :]
+                )
+                sensor_displacements = count_deltas * 0.0254 / cpi
+        cursor_deltas = cursor_gain * sensor_displacements
         # Match the scalar implementation's ``np.allclose(hand_delta, 0)``
         # branch while retaining the orientation update for tiny segments.
         near_zero_displacement = np.all(np.isclose(hand_deltas, 0), axis=-1)
         cursor_deltas = np.where(
             near_zero_displacement[..., np.newaxis], 0.0, cursor_deltas
         )
+        if return_count_residual:
+            return cursor_deltas, next_orientations, next_count_residual
         return cursor_deltas, next_orientations
 
     @staticmethod

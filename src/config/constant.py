@@ -73,6 +73,7 @@ PARAM_SYMBOL = dict(
     mouse_rotation_gain_x=r"$k_{rot,x}$",
     mouse_rotation_gain_y=r"$k_{rot,y}$",
     mouse_plan_correction=r"$k_{corr}$",
+    mouse_cpi=r"$CPI$",
 
     rew_succ_0=r"$r_{succ}^{0}$",
     rew_fail_0=r"$r_{fail}^{0}$",

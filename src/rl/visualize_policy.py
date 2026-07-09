@@ -502,6 +502,8 @@ def create_parameter_visualizer(
         "mouse_rotation_gain_x",
         "mouse_rotation_gain_y",
         "mouse_plan_correction",
+        "mouse_gain",
+        "mouse_cpi",
     ]
     parameter_labels = {
         "theta_m": "Motor noise",
@@ -513,6 +515,8 @@ def create_parameter_visualizer(
         "mouse_rotation_gain_x": "Rotation gain x",
         "mouse_rotation_gain_y": "Rotation gain y",
         "mouse_plan_correction": "Plan correction",
+        "mouse_gain": "Mouse gain",
+        "mouse_cpi": "Mouse CPI",
     }
     slider_defaults = slider_defaults or {}
     slider_specs = []
@@ -525,7 +529,10 @@ def create_parameter_visualizer(
         maximum = float(parameter_range.max)
         initial = slider_defaults.get(name, (minimum + maximum) / 2)
         initial = float(np.clip(initial, minimum, maximum))
-        value_format = "%.3f" if maximum - minimum <= 2 else "%.1f"
+        if name == "mouse_cpi":
+            value_format = "%.0f"
+        else:
+            value_format = "%.3f" if maximum - minimum <= 2 else "%.1f"
         slider_specs.append(
             (name, parameter_labels[name], minimum, maximum, initial, value_format)
         )
