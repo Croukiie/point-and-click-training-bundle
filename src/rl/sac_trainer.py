@@ -144,9 +144,7 @@ class SACTrainer:
             log_path=os.path.join(run_path, "evaluation"),
             parameter_log_path=os.path.join(run_path, "evaluation", "parameters"),
             callback_after_eval=None, 
-            # EvalCallback already uses a separate single environment. Keep the
-            # requested sample size independent of the training worker count.
-            n_eval_episodes=max(1, self.config.callback.eval_ep),
+            n_eval_episodes=max(1, self.config.callback.eval_ep // self.num_cpu),
             verbose=0
         )
         std_cb = TensorboardStdCallback()
@@ -155,10 +153,6 @@ class SACTrainer:
 
     def set_model(self):
         self.device = self._select_device()
-        gradient_steps = self.config.model.get("gradient_steps", 1)
-        if gradient_steps == "match_envs":
-            gradient_steps = self.num_cpu
-        gradient_steps = int(gradient_steps)
         self.model = SAC(
             ModulatedSACPolicy,
             self.env,
@@ -171,7 +165,6 @@ class SACTrainer:
             target_entropy=self.config.model.target_entropy,
             device=self.device,
             train_freq=(1, "step"),
-            gradient_steps=gradient_steps,
             policy_kwargs={
                 "net_arch": self.config.model.mlp.arch,
                 "sim_param_dim": self.param_modul_length,
@@ -244,12 +237,6 @@ if __name__ == "__main__":
     parser.add_argument('--mlp_arch', type=str, default=None)
     parser.add_argument('--batch', type=int, default=None)
     parser.add_argument('--lr', type=float, default=None)
-    parser.add_argument(
-        '--gradient_steps',
-        type=str,
-        default=None,
-        help="SAC updates per rollout: an integer or 'match_envs'",
-    )
     parser.add_argument('--save_freq', type=int, default=None)
     parser.add_argument('--eval_freq', type=int, default=None)
     parser.add_argument('--eval_ep', type=int, default=None)
@@ -280,22 +267,12 @@ if __name__ == "__main__":
         model_changed = True
     if args.mlp_arch is not None:
         trainer.config.model.mlp.arch = [int(v.strip()) for v in args.mlp_arch.split(",") if v.strip()]
-        trainer.config.model.mlp.concat = list(
-            range(len(trainer.config.model.mlp.arch) + 1)
-        )
         model_changed = True
     if args.batch is not None:
         trainer.config.model.batch = args.batch
         model_changed = True
     if args.lr is not None:
         trainer.config.model.lr = args.lr
-        model_changed = True
-    if args.gradient_steps is not None:
-        trainer.config.model.gradient_steps = (
-            "match_envs"
-            if args.gradient_steps == "match_envs"
-            else int(args.gradient_steps)
-        )
         model_changed = True
     if args.save_freq is not None:
         trainer.config.callback.save_freq = args.save_freq
