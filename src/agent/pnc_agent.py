@@ -200,6 +200,8 @@ class PnCEnvDefault(gym.Env):
             ("mouse_rotation_gain_x", "mouse_rotation_gain_x"),
             ("mouse_rotation_gain_y", "mouse_rotation_gain_y"),
             ("mouse_plan_correction", "mouse_plan_correction"),
+            ("mouse_gain", "mouse_gain"),
+            ("mouse_cpi", "mouse_cpi"),
         ]:
             if param in self.user_param:
                 setattr(self.pnc_env, attr, self.user_param[param])
@@ -221,7 +223,20 @@ class PnCEnvDefault(gym.Env):
         # ext = sample_min_prob / (1 - sample_min_prob)
         # return np.clip(np.random.uniform(-(1+ext), 1, size=len(self.user.param_modul.list)), -1, 1)
         ext = self.z_sample_min_prob / (1 - self.z_sample_min_prob)
-        return np.clip(np.random.uniform(-ext - 1, np.ones(len(self.user.param_modul.list), dtype=np.float32)), -1, 1)
+        samples = np.random.uniform(
+            -ext - 1,
+            np.ones(len(self.user.param_modul.list), dtype=np.float32),
+        )
+        for index, name in enumerate(self.user.param_modul.list):
+            config = self.user.param_modul[name]
+            if "values" in config:
+                value = np.random.choice(config["values"])
+                samples[index] = linear_normalize(
+                    value,
+                    config.min,
+                    config.max,
+                )
+        return np.clip(samples, -1, 1)
 
 
     def sample_z(self, sample_min_prob=0.0):
@@ -651,6 +666,11 @@ class PnCEnvDefault(gym.Env):
                 "target_distance": target_distance,
                 "window_width": float(initial["window_width"]),
                 "mouse_gain": float(initial["mouse_gain"]),
+                "mouse_cpi": (
+                    None
+                    if initial.get("mouse_cpi") is None
+                    else float(initial["mouse_cpi"])
+                ),
                 "cursor_pos": cursor_pos.tolist(),
                 "target_pos": target_pos.tolist(),
             },

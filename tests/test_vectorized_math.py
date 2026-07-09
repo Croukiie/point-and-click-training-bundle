@@ -135,6 +135,74 @@ class VectorizedMathTests(unittest.TestCase):
             actual_orientations, expected_orientations, rtol=1e-13, atol=1e-13
         )
 
+    def test_cpi_quantization_accumulates_subcount_motion(self):
+        n_segments = 1000
+        hand_deltas = np.full((n_segments, 2), (0.01 / n_segments, 0.0))
+        continuous, _ = Mouse.get_cursor_displacements_from_desk_rotation(
+            hand_deltas, 4.16, 0.0, 0.0, 0.0
+        )
+        quantized, _, residual = Mouse.get_cursor_displacements_from_desk_rotation(
+            hand_deltas,
+            4.16,
+            0.0,
+            0.0,
+            0.0,
+            400.0,
+            return_count_residual=True,
+        )
+
+        count_size = 4.16 * 0.0254 / 400.0
+        np.testing.assert_allclose(
+            quantized.sum(axis=0),
+            continuous.sum(axis=0),
+            atol=count_size / 2,
+        )
+        self.assertLessEqual(np.max(np.abs(residual)), 0.5)
+
+    def test_cpi_residual_persists_across_calls(self):
+        hand_deltas = np.full((1000, 2), (0.01 / 1000, 0.0))
+        one_shot, _, one_shot_residual = (
+            Mouse.get_cursor_displacements_from_desk_rotation(
+                hand_deltas,
+                4.16,
+                0.0,
+                0.0,
+                0.0,
+                400.0,
+                return_count_residual=True,
+            )
+        )
+        first, first_orientations, residual = (
+            Mouse.get_cursor_displacements_from_desk_rotation(
+                hand_deltas[:400],
+                4.16,
+                0.0,
+                0.0,
+                0.0,
+                400.0,
+                return_count_residual=True,
+            )
+        )
+        second, _, split_residual = Mouse.get_cursor_displacements_from_desk_rotation(
+            hand_deltas[400:],
+            4.16,
+            first_orientations[-1],
+            0.0,
+            0.0,
+            400.0,
+            count_residual=residual,
+            return_count_residual=True,
+        )
+
+        np.testing.assert_allclose(np.concatenate((first, second)), one_shot)
+        np.testing.assert_allclose(split_residual, one_shot_residual)
+
+    def test_game_resets_cpi_count_residual(self):
+        game = PnCGame(config_name="cpi_variable")
+        game.mouse_count_residual = np.array([0.25, -0.4])
+        game.reset(cursor_pos=np.zeros(2), target_pos=np.array([0.1, 0.0]))
+        np.testing.assert_array_equal(game.mouse_count_residual, np.zeros(2))
+
     def test_endpoint_correction_matches_reference_search(self):
         game = PnCGame(config_name="default")
         game.mouse_rotation_gain_x = 6.0
