@@ -12,13 +12,20 @@ You may develop and validate the program while RL is training. Do **not** collec
 experimental participant data while RL training is running: CPU/GPU contention
 could cause missed frames and make timing conditions incomparable.
 
-The program uses Windows Raw Input and a custom cursor. Raw mouse counts are
-captured at their native rate and converted with:
+The preferred collection backend uses Windows Raw Input and a custom cursor. Raw
+mouse counts are captured at their native rate and converted with:
 
 `virtual movement = raw counts * 0.0254 / CPI * 4.16`
 
 Windows pointer acceleration therefore does not alter the experimental cursor.
 The hardware CPI still has to be selected physically before each block.
+
+For Mac/Linux pilots, the web version can fall back to browser Pointer Lock
+movement. This is useful for testing and remote demonstrations, but it is not
+equivalent to Windows Raw Input: the operating system or browser may already
+have transformed the mouse deltas. These sessions are marked with
+`input_backend = browser_pointer_lock` in the output files and should not be
+mixed with final Windows Raw Input data.
 
 ## Commands
 
@@ -85,15 +92,44 @@ optional: when enabled, the point-and-click area fills the full browser screen
 and the actual rendered size is logged for each trial. On non-Full-HD displays,
 interpret the data with the logged warning in mind.
 
+### Mac/Linux pilot mode
+
+On Mac/Linux, run the web version with the browser Pointer Lock backend:
+
+```bash
+python -m src.experiment.web_experiment_server --input-backend browser_pointer_lock
+```
+
+On Windows, you can also force this pilot backend for comparison:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.experiment.web_experiment_server --input-backend browser_pointer_lock
+```
+
+The native Python/Pygame version also has a cross-platform fallback for local UI
+debugging:
+
+```bash
+python -m src.experiment.point_and_click_experiment --participant TEST --windowed --input-backend pygame_relative
+```
+
+This fallback samples Pygame relative movement once per frame. It is less precise
+than both Windows Raw Input and the web Pointer Lock path, so treat it as
+debug/pilot only.
+
 ## Output
 
 Each session gets an independent folder under `data/human_experiment/`:
 
 - `session.json`: participant, declared hardware, task settings and CPI order;
-- `raw_mouse_events.csv`: every Raw Input event and reconstructed cursor state;
+- `raw_mouse_events.csv`: every input event and reconstructed cursor state;
 - `frames.csv`: every displayed frame and its timing;
 - `trials.csv`: one result row per trial attempt;
 - `experiment_events.jsonl`: target onsets, clicks, block boundaries and stops.
+
+All per-trial, per-frame and per-input-event CSV files include `input_backend`
+so Windows Raw Input, browser Pointer Lock and Pygame fallback sessions can be
+filtered separately.
 
 Velocity, acceleration, jerk, corrections and trajectory statistics should be
 calculated after collection from the raw time series. They are intentionally not

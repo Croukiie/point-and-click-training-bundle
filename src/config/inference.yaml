@@ -6,6 +6,13 @@ simulator:
     simul_option: default
     fix_per_param: []
 
+  mouse_cpi_24inch_best:
+    model_name: pnc_mouse_cpi_24inch_step100_26189DSRL
+    ckpt: best
+    traj_downsample: 20
+    simul_option: default
+    fix_per_param: []
+
   default:
     model_name: PnCClassicClick_25197EXSJ
     ckpt: 10000000
@@ -222,6 +229,84 @@ training:
       # One weight per inferred parameter. Equal weighting is used for the
       # nine cognitive, reward, cost, and physical-mouse parameters.
       loss_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+  default_cpi:
+    learning_rate: 0.0001
+    lr_gamma: 0.9
+    clipping: 0.5
+    point_estimation: True
+
+    amortizer:
+      device: null
+      trial_encoder_type: attention
+
+      encoder:
+        traj_sz: null
+        stat_sz: null
+        batch_norm: True
+        traj_encoder_type: transformer
+
+        transformer:
+          num_latents: 4
+          n_block: 2
+          query_sz: 16
+          out_sz: 4
+          head_sz: 8
+          n_head: 4
+          attn_dropout: 0.4
+          res_dropout: 0.4
+          max_freq: 10
+          n_freq_bands: 2
+          max_step: null
+
+        conv1d: []
+        rnn:
+          type: LSTM
+          bidirectional: True
+          dropout: 0.2
+          feat_sz: 8
+          depth: 2
+
+        mlp:
+          feat_sz: 256
+          out_sz: 64
+          depth: 2
+
+      trial_encoder:
+        attention:
+          num_latents: 4
+          n_block: 2
+          query_sz: 32
+          out_sz: 32
+          head_sz: 8
+          n_head: 4
+          attn_dropout: 0.4
+          res_dropout: 0.4
+
+      invertible:
+        param_sz: null
+        n_block: 5
+        act_norm: True
+        invert_conv: True
+        batch_norm: False
+        block:
+          permutation: False
+          head_depth: 2
+          head_sz: 32
+          cond_sz: null
+          feat_sz: 32
+          depth: 2
+
+      linear:
+        out_sz: null
+        in_sz: null
+        hidden_sz: 128
+        hidden_depth: 2
+        batch_norm: False
+        activation: relu
+
+      # Same nine parameters as default, plus mouse_cpi.
+      loss_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
   
   default_cond:

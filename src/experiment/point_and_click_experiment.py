@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 from datetime import datetime
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -23,13 +24,22 @@ import pygame
 import yaml
 
 from .async_logger import AsyncExperimentLogger
-from .raw_input_win32 import RI_MOUSE_LEFT_BUTTON_DOWN, RawInputMouse
 from .task_design import counterbalanced_cpi_order, make_trial_templates, virtual_to_pixel
+
+RI_MOUSE_LEFT_BUTTON_DOWN = 0x0001
+try:
+    if sys.platform != "win32":
+        raise ImportError("Windows Raw Input is unavailable on this platform")
+    from .raw_input_win32 import RawInputMouse
+except (ImportError, AttributeError):
+    RawInputMouse = None
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = Path(__file__).with_name("config.yaml")
 INCH_M = 0.0254
+BACKEND_WINDOWS_RAW_INPUT = "windows_raw_input"
+BACKEND_PYGAME_RELATIVE = "pygame_relative"
 
 
 WEB_THEME = {
@@ -76,6 +86,72 @@ class HighPrecisionPacer:
         now_ns = time.perf_counter_ns()
         if now_ns - self.deadline_ns > 4 * self.period_ns:
             self.deadline_ns = now_ns
+
+
+@dataclass(frozen=True)
+class RelativeMouseEvent:
+    timestamp_ns: int
+    device_handle: int
+    device_name: str
+    raw_flags: int
+    button_flags: int
+    button_data: int
+    dx: int
+    dy: int
+    os_cursor_x_px: int | None
+    os_cursor_y_px: int | None
+
+
+class PygameRelativeMouse:
+    """Cross-platform fallback using Pygame relative motion.
+
+    This is not hardware Raw Input. It is intended for Mac/Linux pilots and UI
+    testing, and is marked as ``pygame_relative`` in the logs.
+    """
+
+    def __init__(self):
+        self._left_was_pressed = False
+
+    def start(self):
+        pygame.mouse.get_rel()
+        self._left_was_pressed = bool(pygame.mouse.get_pressed()[0])
+
+    def drain(self) -> list[RelativeMouseEvent]:
+        dx, dy = pygame.mouse.get_rel()
+        pressed = bool(pygame.mouse.get_pressed()[0])
+        button_flags = RI_MOUSE_LEFT_BUTTON_DOWN if pressed and not self._left_was_pressed else 0
+        self._left_was_pressed = pressed
+        if dx == 0 and dy == 0 and button_flags == 0:
+            return []
+        return [
+            RelativeMouseEvent(
+                timestamp_ns=time.perf_counter_ns(),
+                device_handle=0,
+                device_name=BACKEND_PYGAME_RELATIVE,
+                raw_flags=0,
+                button_flags=button_flags,
+                button_data=0,
+                dx=int(dx),
+                dy=int(dy),
+                os_cursor_x_px=None,
+                os_cursor_y_px=None,
+            )
+        ]
+
+    def stop(self):
+        return None
+
+
+def resolve_native_input_backend(requested: str) -> str:
+    if requested == "auto":
+        return (
+            BACKEND_WINDOWS_RAW_INPUT
+            if sys.platform == "win32" and RawInputMouse is not None
+            else BACKEND_PYGAME_RELATIVE
+        )
+    if requested == BACKEND_WINDOWS_RAW_INPUT and RawInputMouse is None:
+        raise RuntimeError("Windows Raw Input backend is only available on Windows")
+    return requested
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -137,6 +213,7 @@ class PointAndClickExperiment:
         self.exp = config["experiment"]
         self.display_cfg = config["display"]
         self.appearance = config["appearance"]
+        self.input_backend = resolve_native_input_backend(args.input_backend)
         self.virtual_size = tuple(float(v) for v in self.display_cfg["virtual_size_m"])
         self.requested_resolution = tuple(int(v) for v in self.display_cfg["resolution_px"])
         self.refresh_hz = int(self.exp["refresh_hz"])
@@ -179,6 +256,7 @@ class PointAndClickExperiment:
         return {
             "schema_version": 1,
             "session_id": self.session_id,
+            "input_backend": self.input_backend,
             "participant": {
                 "id": self.args.participant,
                 "age": self.args.age,
@@ -209,6 +287,8 @@ class PointAndClickExperiment:
                 ),
                 "raw_timestamp_note": (
                     "perf_counter_ns when WM_INPUT is handled; the mouse does not provide a hardware timestamp"
+                    if self.input_backend == BACKEND_WINDOWS_RAW_INPUT
+                    else "perf_counter_ns when Pygame relative motion is sampled; not hardware Raw Input"
                 ),
                 "config": self.config,
             },
@@ -253,9 +333,10 @@ class PointAndClickExperiment:
         # it can leave the Pygame window and clicks may go to another window
         # instead of being handled reliably by the Raw Input experiment loop.
         pygame.event.set_grab(True)
-        pygame.event.set_blocked(
-            [pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEWHEEL]
-        )
+        if self.input_backend == BACKEND_WINDOWS_RAW_INPUT:
+            pygame.event.set_blocked(
+                [pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEWHEEL]
+            )
         self.title_font = pygame.font.SysFont("segoeui", 58, bold=True)
         self.font = pygame.font.SysFont("segoeui", 31)
         self.small_font = pygame.font.SysFont("segoeui", 21)
@@ -549,6 +630,7 @@ class PointAndClickExperiment:
         events_log = [{
             "event": "target_onset", "session_id": self.session_id,
             "trial_id": trial_id, "timestamp_ns": onset_ns,
+            "input_backend": self.input_backend,
         }]
 
         raw_rows: list[dict] = []
@@ -586,6 +668,7 @@ class PointAndClickExperiment:
                     "session_id": self.session_id,
                     "trial_id": trial_id,
                     "timestamp_ns": end_ns,
+                    "input_backend": self.input_backend,
                 })
             if not self.focused:
                 focus_lost = True
@@ -619,13 +702,16 @@ class PointAndClickExperiment:
                 event_index += 1
                 raw_rows.append({
                     "session_id": self.session_id, "trial_id": trial_id, "phase": phase,
-                    "block_index": block_index, "cpi": cpi, "event_index": event_index,
+                    "block_index": block_index, "cpi": cpi,
+                    "input_backend": self.input_backend,
+                    "event_index": event_index,
                     "timestamp_ns": raw.timestamp_ns,
                     "time_from_onset_ns": raw.timestamp_ns - onset_ns,
                     "device_handle": raw.device_handle,
                     "device_name": raw.device_name,
                     "os_cursor_x_px": raw.os_cursor_x_px,
                     "os_cursor_y_px": raw.os_cursor_y_px,
+                    "browser_timestamp_ms": None,
                     "raw_flags": raw.raw_flags,
                     "button_flags": raw.button_flags, "button_data": raw.button_data,
                     "dx_counts": raw.dx, "dy_counts": raw.dy, "dt_ns": dt_ns,
@@ -647,6 +733,7 @@ class PointAndClickExperiment:
                         "event": "click", "session_id": self.session_id,
                         "trial_id": trial_id, "timestamp_ns": click_ns,
                         "x_m": float(cursor[0]), "y_m": float(cursor[1]), "success": inside,
+                        "input_backend": self.input_backend,
                     })
 
             now_ns = time.perf_counter_ns()
@@ -666,7 +753,9 @@ class PointAndClickExperiment:
             frame_index += 1
             frame_rows.append({
                 "session_id": self.session_id, "trial_id": trial_id, "phase": phase,
-                "block_index": block_index, "cpi": cpi, "frame_index": frame_index,
+                "block_index": block_index, "cpi": cpi,
+                "input_backend": self.input_backend,
+                "frame_index": frame_index,
                 "frame_start_ns": frame_start_ns, "present_return_ns": present_ns,
                 "time_from_onset_ns": present_ns - onset_ns,
                 "frame_interval_ns": frame_interval_ns, "late_by_ns": late_by_ns,
@@ -693,7 +782,9 @@ class PointAndClickExperiment:
         summary = {
             "session_id": self.session_id, "trial_id": trial_id,
             "template_id": template.template_id, "phase": phase,
-            "block_index": block_index, "cpi": cpi, "attempt": attempt,
+            "block_index": block_index, "cpi": cpi,
+            "input_backend": self.input_backend,
+            "attempt": attempt,
             "valid": valid, "invalid_reason": invalid_reason,
             "outcome": outcome, "success": outcome == "success", "timeout": outcome == "timeout",
             "onset_ns": onset_ns, "first_movement_ns": first_movement_ns,
@@ -721,6 +812,7 @@ class PointAndClickExperiment:
         events_log.append({
             "event": "trial_end", "session_id": self.session_id, "trial_id": trial_id,
             "timestamp_ns": end_ns, "outcome": outcome, "valid": valid,
+            "input_backend": self.input_backend,
         })
         logger.submit_trial(summary, raw_rows, frame_rows, events_log)
 
@@ -748,7 +840,11 @@ class PointAndClickExperiment:
         logger = AsyncExperimentLogger(
             self.output_dir, metadata, int(self.config["logging"]["writer_queue_size"])
         )
-        raw_mouse = RawInputMouse()
+        raw_mouse = (
+            RawInputMouse()
+            if self.input_backend == BACKEND_WINDOWS_RAW_INPUT
+            else PygameRelativeMouse()
+        )
         aborted = False
         try:
             raw_mouse.start()
@@ -769,6 +865,7 @@ class PointAndClickExperiment:
                     "event": "block_start", "session_id": self.session_id,
                     "block_index": block_index, "cpi": cpi,
                     "timestamp_ns": time.perf_counter_ns(),
+                    "input_backend": self.input_backend,
                 })
                 for phase, phase_templates in (
                     ("practice", practice_templates), ("measured", measured_templates)
@@ -802,6 +899,7 @@ class PointAndClickExperiment:
                     "event": "block_end", "session_id": self.session_id,
                     "block_index": block_index, "cpi": cpi,
                     "timestamp_ns": time.perf_counter_ns(),
+                    "input_backend": self.input_backend,
                 })
             self.instruction_screen([
                 "The experiment is complete. Thank you!",
@@ -812,6 +910,7 @@ class PointAndClickExperiment:
             logger.submit_event({
                 "event": "session_aborted", "session_id": self.session_id,
                 "timestamp_ns": time.perf_counter_ns(),
+                "input_backend": self.input_backend,
             })
         finally:
             raw_mouse.stop()
@@ -819,6 +918,7 @@ class PointAndClickExperiment:
                 "event": "session_end", "session_id": self.session_id,
                 "timestamp_ns": time.perf_counter_ns(), "aborted": aborted,
                 "logger_backpressure_count": logger.queue_backpressure_count,
+                "input_backend": self.input_backend,
             })
             logger.close()
             pygame.event.set_grab(False)
@@ -874,6 +974,15 @@ def build_parser():
     parser.add_argument("--pointer-acceleration", choices=["on", "off", "unknown"], default="unknown")
     parser.add_argument("--notes", default="")
     parser.add_argument("--windowed", action="store_true", help="Debug only; never use for collection")
+    parser.add_argument(
+        "--input-backend",
+        choices=("auto", BACKEND_WINDOWS_RAW_INPUT, BACKEND_PYGAME_RELATIVE),
+        default="auto",
+        help=(
+            "auto uses Windows Raw Input on Windows and pygame_relative on "
+            "macOS/Linux. pygame_relative is for pilot/debug only."
+        ),
+    )
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--validate-logger", action="store_true")
     return parser
@@ -887,8 +996,6 @@ def main():
         if args.validate_logger:
             validate_logger()
         return 0
-    if sys.platform != "win32":
-        raise RuntimeError("Native Raw Input collection currently requires Windows")
     return PointAndClickExperiment(args, config).run()
 
 

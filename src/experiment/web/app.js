@@ -56,6 +56,9 @@ const state = {
   displayProfileOk: false,
   background: "rgb(24, 27, 33)",
   displayCalibration: null,
+  inputBackend: "windows_raw_input",
+  clientInputQueue: [],
+  clientInputFlushTimer: null,
 };
 
 function send(payload) {
@@ -73,7 +76,7 @@ function connect() {
     state.connected = true;
     els.connection.classList.remove("waiting");
     els.connection.classList.add("connected");
-    els.connection.lastElementChild.textContent = "Local Raw Input recorder connected";
+    els.connection.lastElementChild.textContent = "Local recorder connected";
     updateDisplayCheck();
     els.start.disabled = false;
   });
@@ -276,6 +279,7 @@ function handleServerMessage(message) {
       state.appearance = message.appearance;
       state.templates = message.templates;
       state.cpiOrder = message.cpi_order;
+      state.inputBackend = message.input_backend || "windows_raw_input";
       state.background = `rgb(${state.appearance.background_rgb.join(",")})`;
       els.setup.classList.add("hidden");
       els.experiment.classList.remove("hidden");
@@ -409,11 +413,39 @@ document.addEventListener("keydown", event => {
   }
 });
 
+document.addEventListener("mousemove", event => {
+  if (!usesBrowserPointerLockBackend()) return;
+  if (document.pointerLockElement !== els.canvas) return;
+  if (!state.current?.active) return;
+  queueClientInputEvent({
+    movementX: event.movementX || 0,
+    movementY: event.movementY || 0,
+  });
+});
+
+document.addEventListener("mousedown", event => {
+  if (!usesBrowserPointerLockBackend()) return;
+  if (document.pointerLockElement !== els.canvas) return;
+  if (!state.current?.active) return;
+  if (event.button !== 0) return;
+  event.preventDefault();
+  queueClientInputEvent({
+    movementX: 0,
+    movementY: 0,
+    buttonFlags: LEFT_BUTTON_DOWN,
+    immediate: true,
+  });
+});
+
 function showIntroduction() {
+  const backendNotice = usesBrowserPointerLockBackend()
+    ? "This Mac/Linux-compatible pilot mode uses browser Pointer Lock movement, not Windows Raw Input."
+    : "This Windows mode uses the local Raw Input recorder for low-level mouse deltas.";
   showOverlay({
     kicker: "Instructions",
     title: "Point to the filled target",
     paragraphs: [
+      backendNotice,
       "The target is a filled coral circle. Your cursor is the small blue ring.",
       "Move as naturally as possible. The first left click ends each trial, even when it misses.",
       "Use the Fullscreen button if needed. Press Escape, P, or Pause to open the menu.",
@@ -548,6 +580,14 @@ function abortSessionFromMenu() {
   send({ type: "abort_session", reason: "participant_menu_stop", browser_ms: performance.now() });
 }
 
+function usesBrowserPointerLockBackend() {
+  return state.inputBackend === "browser_pointer_lock";
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
 async function acquirePointerLock() {
   state.pointerLockRawRequested = true;
   state.pointerLockRawGranted = false;
@@ -561,6 +601,61 @@ async function acquirePointerLock() {
   }
   if (document.pointerLockElement !== els.canvas) {
     throw new Error("Pointer lock is required for the experiment.");
+  }
+}
+
+function flushClientInputEvents() {
+  if (state.clientInputFlushTimer != null) {
+    clearTimeout(state.clientInputFlushTimer);
+    state.clientInputFlushTimer = null;
+  }
+  if (!usesBrowserPointerLockBackend() || !state.current || state.clientInputQueue.length === 0) {
+    state.clientInputQueue = [];
+    return;
+  }
+  const events = state.clientInputQueue.splice(0);
+  try {
+    send({
+      type: "client_input_batch",
+      trial_id: state.current.trialId,
+      events,
+    });
+  } catch (_) {
+    state.clientInputQueue.unshift(...events);
+  }
+}
+
+function queueClientInputEvent({ movementX = 0, movementY = 0, buttonFlags = 0, buttonData = 0, immediate = false }) {
+  if (!usesBrowserPointerLockBackend()) return;
+  const trial = state.current;
+  if (!trial || !trial.active || state.paused || state.waitingForSave) return;
+  const transform = taskTransform();
+  const dxM = movementX / transform.scale;
+  const dyM = -movementY / transform.scale;
+  trial.cursorX = clamp(trial.cursorX + dxM, -transform.widthM / 2, transform.widthM / 2);
+  trial.cursorY = clamp(trial.cursorY + dyM, -transform.heightM / 2, transform.heightM / 2);
+  trial.rawSequence += 1;
+  trial.rawSinceFrame += 1;
+  if ((movementX !== 0 || movementY !== 0) && trial.firstMovementMs == null) {
+    trial.firstMovementMs = performance.now();
+  }
+  if (buttonFlags & LEFT_BUTTON_DOWN) {
+    trial.clickMs = performance.now();
+  }
+  state.clientInputQueue.push({
+    sequence: trial.rawSequence,
+    browser_ms: performance.now(),
+    dx_counts: movementX,
+    dy_counts: movementY,
+    button_flags: buttonFlags,
+    button_data: buttonData,
+    cursor_x_m: trial.cursorX,
+    cursor_y_m: trial.cursorY,
+  });
+  if (immediate) {
+    flushClientInputEvents();
+  } else if (state.clientInputFlushTimer == null) {
+    state.clientInputFlushTimer = setTimeout(flushClientInputEvents, 4);
   }
 }
 
@@ -597,6 +692,11 @@ function beginTrial() {
 
 function onTrialReady(message) {
   const template = message.template;
+  state.clientInputQueue = [];
+  if (state.clientInputFlushTimer != null) {
+    clearTimeout(state.clientInputFlushTimer);
+    state.clientInputFlushTimer = null;
+  }
   state.current = {
     trialId: message.trial_id,
     template,
@@ -677,6 +777,7 @@ function onTrialResult(message) {
     trial_id: trial.trialId,
     frames: trial.frames,
     client: {
+      input_backend: state.inputBackend,
       time_origin_ms: performance.timeOrigin,
       first_movement_ms: trial.firstMovementMs,
       click_ms: trial.clickMs,
@@ -816,6 +917,9 @@ function resetToSetup() {
     pauseAfterInvalidation: false,
     background: "rgb(24, 27, 33)",
     displayCalibration: null,
+    inputBackend: "windows_raw_input",
+    clientInputQueue: [],
+    clientInputFlushTimer: null,
   });
   els.fatal.classList.add("hidden");
   els.fatal.textContent = "";
