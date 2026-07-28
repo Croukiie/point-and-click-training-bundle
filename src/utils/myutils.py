@@ -182,12 +182,15 @@ def sort_and_pad_traj_data(stat_data, traj_data, value=0):
                padding lengths (torch.Tensor), and sorted indices (torch.Tensor).
     """
     # Get trajectory lengths
-    traj_lens = [traj.shape[0] for traj in traj_data]
+    numeric_traj_data = [
+        np.asarray(traj, dtype=np.float32) for traj in traj_data
+    ]
+    traj_lens = [traj.shape[0] for traj in numeric_traj_data]
     max_len = max(traj_lens)
 
     # Pad trajectory data
     padded_data = []
-    for traj in traj_data:
+    for traj in numeric_traj_data:
         padded_data.append(np.pad(
             traj,
             ((0, max_len), (0, 0)),
@@ -201,7 +204,9 @@ def sort_and_pad_traj_data(stat_data, traj_data, value=0):
     padded = max_len - lens
 
     # Get sorted static and trajectory data
-    sorted_trajs = torch.FloatTensor(np.array(padded_data))[sorted_idx]
+    sorted_trajs = torch.from_numpy(
+        np.asarray(padded_data, dtype=np.float32)
+    )[sorted_idx]
     sorted_stats = torch.FloatTensor(np.array(stat_data))[sorted_idx]
     return sorted_stats, sorted_trajs, padded, sorted_idx
 
@@ -216,13 +221,19 @@ def mask_and_pad_traj_data(traj_data, value=0):
     outputs (tuple): Tuple containing padded trajectory data (torch.Tensor) and mask (torch.BoolTensor).
     """
     # Get trajectory lengths
-    traj_lens = [traj.shape[0] for traj in traj_data]
+    # Trajectories loaded from variable-length ``.npz`` arrays can retain an
+    # object dtype even though every value is numeric.  Convert each sequence
+    # explicitly before padding so the Transformer always receives float32.
+    numeric_traj_data = [
+        np.asarray(traj, dtype=np.float32) for traj in traj_data
+    ]
+    traj_lens = [traj.shape[0] for traj in numeric_traj_data]
     max_len = max(traj_lens)
     mask = torch.zeros((len(traj_data), max_len))
 
     # Pad trajectory data and create mask
     padded_data = []
-    for i, traj in enumerate(traj_data):
+    for i, traj in enumerate(numeric_traj_data):
         padded_data.append(np.pad(
             traj,
             ((0, max_len), (0, 0)),
@@ -232,7 +243,9 @@ def mask_and_pad_traj_data(traj_data, value=0):
         mask[i, :traj_lens[i]] = 1
 
     # Get padded data and mask to tensors
-    padded_trajs = torch.FloatTensor(np.array(padded_data))
+    padded_trajs = torch.from_numpy(
+        np.asarray(padded_data, dtype=np.float32)
+    )
     return padded_trajs, mask.bool()
 
 

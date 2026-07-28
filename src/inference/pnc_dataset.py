@@ -150,7 +150,11 @@ class PnCAmortizerTrainingDataset(object):
         self.simul_option = sim_cfg["simul_option"]
 
         if load_existing_data:
-            self._get_dataset(verbose, remove_reaction=self.norm_config.option.remove_reaction)
+            self._get_dataset(
+                verbose,
+                do_not_load_traj=self.norm_config.traj.ignore_traj,
+                remove_reaction=self.norm_config.option.remove_reaction,
+            )
     
 
     def _get_dataset(self, verbose=False, do_not_load_traj=True, **kwargs):
@@ -206,7 +210,12 @@ class PnCAmortizerTrainingDataset(object):
                 return linear_normalize(stat[:,stat_target_indices], *stat_value_range.T, dtype=np.float32)
             
             def norm_traj(traj):    # traj := (n_length x n_feature) np.ndarray
-                return linear_normalize(traj[:,traj_target_indices], *traj_value_range.T, dtype=np.float32)
+                traj = np.asarray(traj, dtype=np.float32)
+                return linear_normalize(
+                    traj[:, traj_target_indices],
+                    *traj_value_range.T,
+                    dtype=np.float32,
+                )
 
             # Normalization
             for s, traj_list in zip(data["stat_data"], data["traj_data"]):
@@ -321,12 +330,11 @@ class PnCAmortizerTrainingDataset(object):
         if self.dataset["traj_data"] is None:
             traj_data = None
         else:
-            traj_data = self.dataset["traj_data"][rows, cols].squeeze(1) if sim_per_param == 1 \
-                else self.dataset["traj_data"][rows, cols]
+            traj_data = self.dataset["traj_data"][rows, cols]
 
         return (
             self.dataset["params"][indices], 
-            stats.squeeze(1) if sim_per_param == 1 else stats, 
+            stats,
             traj_data
         )
 
@@ -417,7 +425,12 @@ class PnCAmortizerValidationDataset(object):
                 return linear_normalize(stat[:,stat_target_indices], *stat_value_range.T, dtype=np.float32)
             
             def norm_traj(traj):    # traj := (n_length x n_feature) np.ndarray
-                return linear_normalize(traj[:,traj_target_indices], *traj_value_range.T, dtype=np.float32)
+                traj = np.asarray(traj, dtype=np.float32)
+                return linear_normalize(
+                    traj[:, traj_target_indices],
+                    *traj_value_range.T,
+                    dtype=np.float32,
+                )
 
             param = data["params"]
             stats = np.array([norm_stat(s) for s in data["stat_data"]], dtype=np.float32)

@@ -93,6 +93,7 @@ class PnCEnvDefault(gym.Env):
             target_spd = None,
             target_dir = None,
             mouse_gain = None,
+            mouse_ori = None,
         )
         self.pnc_env = PnCGame(config_name=pnc_env_name, config=pnc_env_cfg)
 
@@ -190,13 +191,26 @@ class PnCEnvDefault(gym.Env):
 
     def update_params(self):
         for v in self.user.param_modul.list:
-            # if self.user.param_modul[v].type == "uniform":
-            self.user_param[v] = linear_denormalize(
+            parameter_range = self.user.param_modul[v]
+            value = linear_denormalize(
                 self.param_mod_z[v],
-                self.user.param_modul[v].min,
-                self.user.param_modul[v].max
+                parameter_range.min,
+                parameter_range.max,
             )
+            if "step" in parameter_range:
+                step = float(parameter_range.step)
+                value = parameter_range.min + round(
+                    (float(value) - parameter_range.min) / step
+                ) * step
+                value = float(np.clip(value, parameter_range.min, parameter_range.max))
+                # Keep the policy conditioning value exactly aligned with the
+                # quantized physical value used by the environment.
+                self.param_mod_z[v] = float(
+                    linear_normalize(value, parameter_range.min, parameter_range.max)
+                )
+            self.user_param[v] = value
         for param, attr in [
+            ("cpi", "cpi"),
             ("mouse_rotation_gain_x", "mouse_rotation_gain_x"),
             ("mouse_rotation_gain_y", "mouse_rotation_gain_y"),
             ("mouse_plan_correction", "mouse_plan_correction"),
@@ -218,10 +232,30 @@ class PnCEnvDefault(gym.Env):
 
 
     def _z_sampler(self, sample_min_prob=0.0):
-        # ext = sample_min_prob / (1 - sample_min_prob)
-        # return np.clip(np.random.uniform(-(1+ext), 1, size=len(self.user.param_modul.list)), -1, 1)
         ext = self.z_sample_min_prob / (1 - self.z_sample_min_prob)
-        return np.clip(np.random.uniform(-ext - 1, np.ones(len(self.user.param_modul.list), dtype=np.float32)), -1, 1)
+        sampled = np.clip(
+            np.random.uniform(
+                -ext - 1,
+                np.ones(len(self.user.param_modul.list), dtype=np.float32),
+            ),
+            -1,
+            1,
+        )
+        for index, name in enumerate(self.user.param_modul.list):
+            parameter_range = self.user.param_modul[name]
+            if "step" not in parameter_range:
+                continue
+            step = float(parameter_range.step)
+            n_steps = int(
+                round((parameter_range.max - parameter_range.min) / step)
+            )
+            value = parameter_range.min + np.random.randint(0, n_steps + 1) * step
+            sampled[index] = linear_normalize(
+                value,
+                parameter_range.min,
+                parameter_range.max,
+            )
+        return sampled.astype(np.float32)
 
 
     def sample_z(self, sample_min_prob=0.0):
@@ -427,7 +461,7 @@ class PnCEnvDefault(gym.Env):
                     plan_duration=action["th"],
                     execute_duration=self.intv.bump,    # Cut at BUMP interval
                     interval=self.intv.muscle,
-                    maximum_hand_speed=self.user.max_hand_speed * self.pnc_env.mouse_gain
+                    maximum_hand_speed=self.user.max_hand_speed * self.pnc_env.cursor_gain
                 )
                 state.ideal_plan_p, state.ideal_plan_v = self.pnc_env.convert_cursor_plan_to_hand_plan(
                     cursor_plan_p,
@@ -463,7 +497,7 @@ class PnCEnvDefault(gym.Env):
                     plan_duration=action["th"],
                     execute_duration=action["th"],  # Full length
                     interval=self.intv.muscle,
-                    maximum_hand_speed=self.user.max_hand_speed * self.pnc_env.mouse_gain
+                    maximum_hand_speed=self.user.max_hand_speed * self.pnc_env.cursor_gain
                 )
                 expand_length = self.user.truncate_time // self.intv.muscle + 1
                 cursor_plan_v = np.pad(cursor_plan_v, ((0, expand_length), (0, 0)), mode='edge')
@@ -650,7 +684,10 @@ class PnCEnvDefault(gym.Env):
                 "target_difficulty": target_difficulty,
                 "target_distance": target_distance,
                 "window_width": float(initial["window_width"]),
-                "mouse_gain": float(initial["mouse_gain"]),
+                "mouse_base_gain": float(initial["mouse_gain"]),
+                "mouse_gain": float(initial["effective_mouse_gain"]),
+                "cpi": float(initial["cpi"]),
+                "initial_mouse_orientation_rad": float(initial["mouse_ori"]),
                 "cursor_pos": cursor_pos.tolist(),
                 "target_pos": target_pos.tolist(),
             },

@@ -37,6 +37,29 @@ class Mouse:
 
         return hand_orientation[0][0]
 
+    @staticmethod
+    def sample_realistic_orientation(
+        normalized_hand_min=(-0.3, -0.3),
+        normalized_hand_max=(0.3, 0.3),
+        forearm_length=0.257,
+    ):
+        """Sample a plausible neutral mouse angle from the anatomical map.
+
+        The rotation map used by the original point-and-click model describes
+        the expected hand/mouse orientation over the reachable desk surface.
+        Sampling its central region models small between-trial changes in grip
+        and forearm placement without introducing implausible 360-degree
+        rotations.
+        """
+        normalized_hand_loc = np.random.uniform(
+            np.asarray(normalized_hand_min, dtype=float),
+            np.asarray(normalized_hand_max, dtype=float),
+        )
+        return Mouse.get_hand_orientation(
+            normalized_hand_loc * float(forearm_length),
+            forearm_length=float(forearm_length),
+        )
+
 
     def get_cursor_displacement(hand_start_loc, hand_end_loc, gain, user_forearm_length=0.257):
 

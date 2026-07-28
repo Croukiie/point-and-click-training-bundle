@@ -502,6 +502,7 @@ def create_parameter_visualizer(
         "mouse_rotation_gain_x",
         "mouse_rotation_gain_y",
         "mouse_plan_correction",
+        "cpi",
     ]
     parameter_labels = {
         "theta_m": "Motor noise",
@@ -513,6 +514,7 @@ def create_parameter_visualizer(
         "mouse_rotation_gain_x": "Rotation gain x",
         "mouse_rotation_gain_y": "Rotation gain y",
         "mouse_plan_correction": "Plan correction",
+        "cpi": "Mouse CPI",
     }
     slider_defaults = slider_defaults or {}
     slider_specs = []
@@ -525,9 +527,26 @@ def create_parameter_visualizer(
         maximum = float(parameter_range.max)
         initial = slider_defaults.get(name, (minimum + maximum) / 2)
         initial = float(np.clip(initial, minimum, maximum))
-        value_format = "%.3f" if maximum - minimum <= 2 else "%.1f"
+        value_step = (
+            float(parameter_range.step)
+            if "step" in parameter_range
+            else None
+        )
+        value_format = (
+            "%.0f"
+            if name == "cpi"
+            else ("%.3f" if maximum - minimum <= 2 else "%.1f")
+        )
         slider_specs.append(
-            (name, parameter_labels[name], minimum, maximum, initial, value_format)
+            (
+                name,
+                parameter_labels[name],
+                minimum,
+                maximum,
+                initial,
+                value_format,
+                value_step,
+            )
         )
 
     target_radius_min, target_radius_max = env.pnc_env.target_rad_range
@@ -548,18 +567,22 @@ def create_parameter_visualizer(
                     )
                 ),
                 "%.4f",
+                None,
             ),
             (
                 "target_speed", "Target speed", 0.0, 0.24,
-                float(np.clip(slider_defaults.get("target_speed", 0.0), 0.0, 0.24)), "%.3f"
+                float(np.clip(slider_defaults.get("target_speed", 0.0), 0.0, 0.24)), "%.3f",
+                None,
             ),
             (
                 "target_direction", "Target direction", 0.0, 360.0,
-                float(np.clip(slider_defaults.get("target_direction", 0.0), 0.0, 360.0)), "%.0f"
+                float(np.clip(slider_defaults.get("target_direction", 0.0), 0.0, 360.0)), "%.0f",
+                None,
             ),
             (
                 "seed", "Random seed", 0.0, 999.0,
-                float(np.clip(slider_defaults.get("seed", seed), 0.0, 999.0)), "%.0f"
+                float(np.clip(slider_defaults.get("seed", seed), 0.0, 999.0)), "%.0f",
+                1.0,
             ),
         ]
     )
@@ -568,7 +591,15 @@ def create_parameter_visualizer(
     rows_per_column = 7
     start_y = 0.285
     row_spacing = 0.032
-    for index, (name, label, minimum, maximum, initial, value_format) in enumerate(slider_specs):
+    for index, (
+        name,
+        label,
+        minimum,
+        maximum,
+        initial,
+        value_format,
+        value_step,
+    ) in enumerate(slider_specs):
         column = index // rows_per_column
         row = index % rows_per_column
         slider_axis = figure.add_axes(
@@ -582,6 +613,7 @@ def create_parameter_visualizer(
             maximum,
             valinit=initial,
             valfmt=value_format,
+            valstep=value_step,
             color=theme["accent"],
             track_color="#334155",
             handle_style={
@@ -779,7 +811,7 @@ def create_parameter_visualizer(
         distances = np.linalg.norm(cursor_positions - target_positions, axis=1)
         cursor_reference = (
             cursor_positions[0]
-            + (hand_positions - hand_positions[0]) * float(env.pnc_env.mouse_gain)
+            + (hand_positions - hand_positions[0]) * float(env.pnc_env.cursor_gain)
         )
         state.update(
             frames=frames,
@@ -863,6 +895,10 @@ def create_parameter_visualizer(
                     f"Target radius={final_frame.target_radius:.4f} m",
                     f"Target speed={slider_value('target_speed'):.3f} m/s",
                     f"Target direction={slider_value('target_direction'):.0f} deg",
+                    (
+                        f"CPI={env.pnc_env.cpi:.0f}  "
+                        f"effective gain={env.pnc_env.cursor_gain:.2f}"
+                    ),
                     f"Physical mouse path={mouse_path:.4f} m",
                     f"Final rotation={rotation_degrees[-1]:.1f} deg",
                 ]

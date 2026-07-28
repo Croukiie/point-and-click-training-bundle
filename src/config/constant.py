@@ -73,6 +73,7 @@ PARAM_SYMBOL = dict(
     mouse_rotation_gain_x=r"$k_{rot,x}$",
     mouse_rotation_gain_y=r"$k_{rot,y}$",
     mouse_plan_correction=r"$k_{corr}$",
+    cpi=r"$CPI$",
 
     rew_succ_0=r"$r_{succ}^{0}$",
     rew_fail_0=r"$r_{fail}^{0}$",
@@ -86,6 +87,7 @@ PARAM_NAME = dict(
     time_penalty = "time penalty",
     motor_effort = "motor effort",
     rew_time = "time penalty",
+    cpi = "mouse CPI",
 )
 
 CONST = Box(dict(
@@ -137,6 +139,8 @@ FIELD = Box(dict(
     CLICK_PRD = "click_period",
     TRAV_LEN = "traverse_length",
     MAX_CURSOR_SPD = "max_cursor_speed",
+    HAND_TRAV_LEN = "raw_path_length_m",
+    MAX_HAND_SPD = "raw_max_speed_m_s",
     MOTOR_EFFORT = "motor_effort",
 
     # Initial task conditions
@@ -156,6 +160,7 @@ FIELD = Box(dict(
     HAND_POS_Y0 = "hand_pos_y0",
     HAND_VEL_X0 = "hand_vel_x0",
     HAND_VEL_Y0 = "hand_vel_y0",
+    MOUSE_ORI0 = "mouse_orientation_0",
     MOUSE_GAIN = "mouse_gain_value",
 
 

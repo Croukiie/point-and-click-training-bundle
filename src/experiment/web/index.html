@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Point-and-click experiment</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260713-small-blue-crosshair-v2">
+</head>
+<body>
+  <main id="setup" class="setup-shell">
+    <section class="setup-card">
+      <div class="hero-grid">
+        <div class="intro-panel">
+          <p class="eyebrow">Human motor-control study</p>
+          <h1>Point-and-click experiment</h1>
+          <p class="lead">
+            Local browser interface for CPI-based pointing data collection, connected
+            to the Python Raw Input recorder.
+          </p>
+
+          <div id="connection" class="status waiting">
+            <span class="status-dot"></span><span>Connecting to the local recorder...</span>
+          </div>
+
+          <div class="protocol-list" aria-label="Protocol summary">
+            <div>
+              <span class="protocol-number">01</span>
+              <p><strong>Enter participant metadata</strong><br>Only the participant ID is mandatory.</p>
+            </div>
+            <div>
+              <span class="protocol-number">02</span>
+              <p><strong>Set the requested CPI</strong><br>The page guides each CPI block.</p>
+            </div>
+            <div>
+              <span class="protocol-number">03</span>
+              <p><strong>Run the fixed task window</strong><br>The task starts in fullscreen for the 24 inch Full HD profile; raw mouse events are saved locally.</p>
+            </div>
+          </div>
+        </div>
+
+        <form id="participant-form" class="form-panel">
+          <div class="form-header">
+            <div>
+              <p class="eyebrow">Session setup</p>
+              <h2>Participant details</h2>
+            </div>
+            <span class="required-note">* required</span>
+          </div>
+
+          <div class="grid">
+            <label>
+              Participant ID <span aria-hidden="true">*</span>
+              <input id="participant-id" required maxlength="64" autocomplete="off" placeholder="P001">
+            </label>
+            <label>
+              Age
+              <input id="age" type="number" min="18" max="100" placeholder="24">
+            </label>
+            <label>
+              Dominant hand
+              <select id="dominant-hand">
+                <option value="right">Right</option>
+                <option value="left">Left</option>
+                <option value="ambidextrous">Ambidextrous</option>
+              </select>
+            </label>
+            <label>
+              Sex (optional)
+              <select id="sex">
+                <option value="not_reported">Prefer not to say</option>
+                <option value="female">Female</option>
+                <option value="male">Male</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>
+              Mouse model
+              <input id="mouse-model" autocomplete="off" placeholder="Model name">
+            </label>
+            <label>
+              Gaming hours per week
+              <input id="gaming-hours" type="number" min="0" max="168" step="0.5" placeholder="0">
+            </label>
+            <label>
+              Windows pointer acceleration
+              <select id="pointer-acceleration">
+                <option value="off">Off</option>
+                <option value="on">On</option>
+                <option value="unknown">Unknown</option>
+              </select>
+            </label>
+            <label>
+              Windows pointer speed
+              <input id="pointer-speed" autocomplete="off" placeholder="For example: 6/11">
+            </label>
+          </div>
+
+          <div class="section-title">
+            <p class="eyebrow">Fixed task window</p>
+            <p>
+              The task is rendered as a fixed 24 inch Full HD profile
+              (1920 x 1080 px). Other screens can launch the experiment, but a
+              warning is logged because the physical size may differ.
+            </p>
+          </div>
+
+          <div class="grid calibration-grid">
+            <label>
+              Screen width (cm) <span aria-hidden="true">*</span>
+              <input id="screen-width-cm" type="number" required min="10" max="200" step="0.01" value="53.13" readonly>
+            </label>
+            <label>
+              Screen height (cm) <span aria-hidden="true">*</span>
+              <input id="screen-height-cm" type="number" required min="10" max="120" step="0.01" value="29.89" readonly>
+            </label>
+            <label>
+              Resolution width (px) <span aria-hidden="true">*</span>
+              <input id="resolution-width-px" type="number" required min="640" max="10000" step="1" value="1920" readonly>
+            </label>
+            <label>
+              Resolution height (px) <span aria-hidden="true">*</span>
+              <input id="resolution-height-px" type="number" required min="480" max="10000" step="1" value="1080" readonly>
+            </label>
+            <label>
+              Refresh rate (Hz) <span aria-hidden="true">*</span>
+              <input id="refresh-hz" type="number" required min="30" max="1000" step="1" value="240" readonly>
+            </label>
+            <label>
+              Display confirmation notes
+              <input id="display-notes" autocomplete="off" placeholder="Example: lab 24 inch Full HD monitor">
+            </label>
+          </div>
+
+          <p id="display-check" class="display-check" role="status"></p>
+
+          <label class="wide-label">
+            Notes
+            <textarea id="notes" rows="2" placeholder="Optional session notes"></textarea>
+          </label>
+
+          <div class="preflight">
+            <div><span>Fixed display</span><strong>24 inch Full HD</strong></div>
+            <div><span>Virtual task space</span><strong>0.5313 x 0.2989 m</strong></div>
+            <div><span>Recorded trials</span><strong>384 total</strong></div>
+          </div>
+
+          <button id="start-button" class="primary" type="submit" disabled>
+            Start experiment
+          </button>
+        </form>
+      </div>
+
+      <p id="setup-error" class="error" role="alert"></p>
+    </section>
+  </main>
+
+  <section id="experiment" class="experiment hidden" aria-live="polite">
+    <canvas id="task-canvas"></canvas>
+    <div id="overlay" class="overlay hidden">
+      <div class="overlay-card">
+        <p id="overlay-kicker" class="eyebrow"></p>
+        <h2 id="overlay-title"></h2>
+        <div id="overlay-copy"></div>
+        <div class="overlay-actions">
+          <button id="overlay-button" class="primary">Continue</button>
+          <button id="overlay-secondary-button" class="secondary hidden" type="button"></button>
+          <button id="overlay-danger-button" class="danger hidden" type="button"></button>
+        </div>
+      </div>
+    </div>
+    <div id="fatal" class="fatal hidden"></div>
+  </section>
+
+  <script src="/static/app.js?v=20260713-small-blue-crosshair-v2" defer></script>
+</body>
+</html>

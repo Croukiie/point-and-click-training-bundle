@@ -50,6 +50,9 @@ class PnCAmortizerTrainer(ABC):
         train_config='default',         # Training hyperparameter
         simul_config='default',         # Simulator model setting
         data_config='default',    # Data processing setting,
+        train_trials_per_param=64,
+        validation_users=100,
+        validation_trials=256,
     ):
         if load_model is not None:
             name = load_model
@@ -61,11 +64,14 @@ class PnCAmortizerTrainer(ABC):
         self.iter = 0
         self.train_dataset = PnCAmortizerTrainingDataset(
             simulator_config=simul_config, 
-            normalize_config=data_config
+            normalize_config=data_config,
+            num_of_epsiode_per_param=train_trials_per_param,
         )
         self.valid_dataset = PnCAmortizerValidationDataset(
             simulator_config=simul_config, 
-            normalize_config=data_config
+            normalize_config=data_config,
+            total_user=validation_users,
+            trial_per_user=validation_trials,
         )
         self.simulator = deepcopy(self.train_dataset.simulator.simulator)
 
@@ -125,7 +131,12 @@ class PnCAmortizerTrainer(ABC):
 
         self.loss_weight_vector = np.asarray(
             self.train_config.amortizer.loss_weight, dtype=np.float32
-        )
+        ).reshape(-1)
+        if self.loss_weight_vector.size == 1:
+            self.loss_weight_vector = np.repeat(
+                self.loss_weight_vector,
+                len(self.target_param),
+            )
         if self.loss_weight_vector.size != len(self.target_param):
             raise ValueError(
                 "The inference loss must contain one weight per parameter: "
@@ -561,6 +572,7 @@ if __name__ == "__main__":
         train_config=args.train_config,
         simul_config=args.simul_config,
         data_config=args.data_config,
+        train_trials_per_param=args.n_trial,
     )
 
     if args.load_ckpt:

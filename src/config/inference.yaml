@@ -45,6 +45,8 @@ normalize:
         click_rel_endpoint_y,
         target_radius,
         target_distance,
+        raw_path_length_m,
+        raw_max_speed_m_s,
       ]
       range:
         movement_time:
@@ -80,6 +82,12 @@ normalize:
         max_cursor_speed:
           min: -5.0
           max: 5.0
+        raw_path_length_m:
+          min: -0.5
+          max: 0.5
+        raw_max_speed_m_s:
+          min: -1.5
+          max: 1.5
         click_rel_endpoint_x:
           min: -0.3
           max: 0.3
@@ -106,35 +114,47 @@ normalize:
     traj:
       list: [
         timediff,
+        cursor_pos_x,
+        cursor_pos_y,
+        hand_pos_x,
+        hand_pos_y,
         target_rel_pos_x,
         target_rel_pos_y
       ]
-      ignore_traj: true
+      # The CPI is expressed by the cursor/hand displacement ratio, so both
+      # physical hand motion and virtual cursor motion must reach the encoder.
+      ignore_traj: false
       range:
         timestamp:
           min: -3
           max: 3
         timediff:
-          min: -1
-          max: 1
+          min: 0
+          max: 0.1
         target_pos_x:
-          min: -1
-          max: 1
+          min: -0.2656562237
+          max: 0.2656562237
         target_pos_y:
-          min: -1
-          max: 1
+          min: -0.1494316258
+          max: 0.1494316258
         cursor_pos_x:
-          min: -1
-          max: 1
+          min: -0.2656562237
+          max: 0.2656562237
         cursor_pos_y:
-          min: -1
-          max: 1
+          min: -0.1494316258
+          max: 0.1494316258
+        hand_pos_x:
+          min: -0.3
+          max: 0.3
+        hand_pos_y:
+          min: -0.3
+          max: 0.3
         target_rel_pos_x:
-          min: -1
-          max: 1
+          min: -0.5313124474
+          max: 0.5313124474
         target_rel_pos_y:
-          min: -1
-          max: 1
+          min: -0.2988632517
+          max: 0.2988632517
 
     option:
       remove_reaction: True
@@ -219,9 +239,8 @@ training:
         batch_norm: False
         activation: relu
 
-      # One weight per inferred parameter. Equal weighting is used for the
-      # nine cognitive, reward, cost, and physical-mouse parameters.
-      loss_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      # A scalar is broadcast to every inferred parameter, including CPI.
+      loss_weight: 1.0
 
   
   default_cond:

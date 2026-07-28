@@ -9,11 +9,11 @@ observations:
   default:
     list: [cursor_pos, cursor_vel, target_pos, target_rad, elapsed_time, hand_pos, hand_vel, mouse_ori]
     cursor_pos:
-      max: [0.3, 0.3]
-      min: [-0.3, -0.3]
+      max: [0.2656562237, 0.1494316258]
+      min: [-0.2656562237, -0.1494316258]
     target_pos:
-      max: [0.3, 0.3]
-      min: [-0.3, -0.3]
+      max: [0.2656562237, 0.1494316258]
+      min: [-0.2656562237, -0.1494316258]
     target_rad:
       max: [0.1]
       min: [-0.1]
@@ -94,7 +94,7 @@ classic_real:
     c_mu: 0.185
     rew_const: 0.0
   param_modul:
-    list: [theta_m, theta_c, delta, rew_succ, rew_fail, time_penalty, effort_cost, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    list: [theta_m, theta_c, delta, rew_succ, rew_fail, time_penalty, effort_cost, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction, cpi]
     theta_m:
       type: uniform
       max: 0.40
@@ -139,6 +139,11 @@ classic_real:
       type: uniform
       max: 1.0
       min: 0.0
+    cpi:
+      type: uniform
+      min: 400
+      max: 1600
+      step: 10
 
 
 
@@ -155,7 +160,7 @@ classic:
     include_ring_time: 0.0
     theta_n: 0.192
   param_modul:
-    list: [theta_m, theta_c, rew_succ, rew_fail, time_penalty, effort_cost, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    list: [theta_m, theta_c, rew_succ, rew_fail, time_penalty, effort_cost, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction, cpi]
     theta_m:
       type: uniform
       max: 0.40
@@ -196,6 +201,11 @@ classic:
       type: uniform
       max: 1.0
       min: 0.0
+    cpi:
+      type: uniform
+      min: 400
+      max: 1600
+      step: 10
 
 
 
@@ -213,7 +223,7 @@ classic_no_effort:
     theta_n: 0.192
     effort_cost: 0
   param_modul:
-    list: [theta_m, theta_c, rew_succ, rew_fail, time_penalty, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    list: [theta_m, theta_c, rew_succ, rew_fail, time_penalty, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction, cpi]
     theta_m:
       type: uniform
       max: 0.40
@@ -249,6 +259,11 @@ classic_no_effort:
       type: uniform
       max: 1.0
       min: 0.0
+    cpi:
+      type: uniform
+      min: 400
+      max: 1600
+      step: 10
 
 
 classic_symmetric:
@@ -266,7 +281,7 @@ classic_symmetric:
     effort_cost: 0.0
     fail_scale: 1.0
   param_modul:
-    list: [theta_m, theta_c, rew_succ, time_penalty, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    list: [theta_m, theta_c, rew_succ, time_penalty, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction, cpi]
     theta_m:
       type: uniform
       max: 0.40
@@ -297,6 +312,11 @@ classic_symmetric:
       type: uniform
       max: 1.0
       min: 0.0
+    cpi:
+      type: uniform
+      min: 400
+      max: 1600
+      step: 10
 
 
 classic_symmetric_scale:
@@ -313,7 +333,7 @@ classic_symmetric_scale:
     theta_n: 0.192
     effort_cost: 0.0
   param_modul:
-    list: [theta_m, theta_c, rew_succ, fail_scale, time_penalty, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    list: [theta_m, theta_c, rew_succ, fail_scale, time_penalty, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction, cpi]
     theta_m:
       type: uniform
       max: 0.40
@@ -348,6 +368,11 @@ classic_symmetric_scale:
       type: uniform
       max: 1.0
       min: 0.0
+    cpi:
+      type: uniform
+      min: 400
+      max: 1600
+      step: 10
 
 
 
@@ -365,7 +390,7 @@ classic_symmscale_effort:
     include_ring_time: 0.0
     theta_n: 0.192
   param_modul:
-    list: [theta_m, theta_c, rew_succ, fail_scale, time_penalty, effort_cost, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction]
+    list: [theta_m, theta_c, rew_succ, fail_scale, time_penalty, effort_cost, mouse_rotation_gain_x, mouse_rotation_gain_y, mouse_plan_correction, cpi]
     theta_m:
       type: uniform
       max: 0.40
@@ -405,3 +430,8 @@ classic_symmscale_effort:
       type: uniform
       max: 1.0
       min: 0.0
+    cpi:
+      type: uniform
+      min: 400
+      max: 1600
+      step: 10

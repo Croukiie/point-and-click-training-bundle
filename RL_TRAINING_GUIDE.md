@@ -19,6 +19,13 @@ Windows PowerShell:
 
 ## Full Training
 
+The task uses the physical dimensions of a 24-inch 16:9 display
+(`0.5313 x 0.2989 m`). CPI is a policy parameter sampled from 400 to 1600 in
+steps of 10. The historical mouse gain of 4.16 is calibrated at 400 CPI, so
+the effective gain is `4.16 * CPI / 400`. Every trial independently samples
+its initial physical-mouse orientation from a continuous uniform distribution
+between `-30` and `+20` degrees.
+
 기본 full training은 `src/config/rl_config.yaml`의 `simple` 설정을 사용합니다.
 현재 기본 step 수는 `10,000,000`입니다.
 
@@ -169,10 +176,10 @@ python -m src.rl.visualize_policy --model <run_name> --ckpt 10000000
 ```
 ## Amortized inference from the converged mouse policy
 
-The inference simulator is configured as `mouse_converge_best` in
-`src/config/inference.yaml`. It uses the best checkpoint of
-`pnc_mouse_converge_26185ENND` (evaluation step 24,500,000) and infers all
-nine policy parameters with equal loss weights.
+The legacy inference simulator is configured as `mouse_converge_best` in
+`src/config/inference.yaml`. Its saved checkpoint predates CPI and still
+contains nine policy parameters. Train a new CPI-aware run with the complete
+pipeline below before generating a CPI dataset.
 
 Install the inference-only dependencies once:
 
@@ -195,7 +202,7 @@ Generate the training and validation simulations:
 ```powershell
 .\.venv\Scripts\python.exe -m src.inference.pnc_dataset `
   --simul_config mouse_converge_best `
-  --n_param 16384 --n_trial 64 `
+  --n_param 131072 --n_trial 64 `
   --valid_users 100 --valid_trials 256 `
   --num_cpu 8
 ```
@@ -209,4 +216,41 @@ Then train the point-estimation amortizer:
   --train_config default --data_config default `
   --n_iter 100 --step_per_iter 2048 `
   --batch_sz 64 --n_trial 64 --save_freq 10
+```
+
+## Complete CPI pipeline
+
+The all-in-one runner trains the RL policy, generates both datasets, and then
+trains the amortizer. By default it generates `2^17 = 131072` training
+parameter sets, with 64 trials per set:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.scripts.all_in_one_run
+```
+
+The CPI amortizer uses both per-trial summaries and 20 Hz trajectories. Its
+trajectory encoder receives time deltas, cursor position, physical hand
+position, and cursor-to-target relative position. Keeping cursor and hand
+motion together makes their displacement ratio, and therefore CPI, observable.
+
+To reuse an existing RL run:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.scripts.all_in_one_run `
+  --skip-rl --rl-model <run_name> --rl-checkpoint best
+```
+
+## Human CPI experiment
+
+Install the dedicated UI dependencies:
+
+```powershell
+uv pip install --python .venv\Scripts\python.exe -r requirements-experiment.txt
+```
+
+The protocol uses the same 400-CPI reference gain and exact 24-inch 16:9
+surface as the RL environment. Start the local browser experiment with:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.experiment.web_experiment_server
 ```

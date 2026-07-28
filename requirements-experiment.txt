@@ -1,0 +1,4 @@
+-r requirements-rl.txt
+
+aiohttp>=3.9
+pygame>=2.5

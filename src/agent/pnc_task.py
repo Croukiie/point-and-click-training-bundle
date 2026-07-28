@@ -25,11 +25,24 @@ class PnCGame:
         Direction angle unit: degree
         """
         config = ENV[config_name] if config is None else config
-        self.mouse_gain = config.mouse_gain     # Hand coordinate (m) -> Monitor coordinate (m)
+        # ``mouse_gain`` is calibrated at ``mouse_reference_cpi``.  The
+        # effective hand-to-cursor gain scales linearly with CPI, as physical
+        # mice report proportionally more counts for the same desk movement.
+        self.mouse_gain = config.mouse_gain
+        self.mouse_reference_cpi = float(config.get("mouse_reference_cpi", 400))
+        self.cpi = float(config.get("cpi", self.mouse_reference_cpi))
         self.mouse_mapping = config.get("mouse_mapping", "linear")
         self.mouse_rotation_gain_x = config.get("mouse_rotation_gain_x", -3.0)
         self.mouse_rotation_gain_y = config.get("mouse_rotation_gain_y", 0.0)
         self.mouse_plan_correction = config.get("mouse_plan_correction", 0.0)
+        self.initial_mouse_orientation = config.get(
+            "initial_mouse_orientation",
+            {
+                "type": "uniform",
+                "min_deg": -30.0,
+                "max_deg": 20.0,
+            },
+        )
 
         # Sample options
         self.window_width_range = (
@@ -73,6 +86,31 @@ class PnCGame:
 
         self.config = config
 
+    @property
+    def cursor_gain(self):
+        """Effective cursor/hand displacement ratio for the current CPI."""
+        return self.mouse_gain * self.cpi / self.mouse_reference_cpi
+
+    def _sample_initial_mouse_orientation(self):
+        setting = self.initial_mouse_orientation
+        mode = setting.get("type", "rotation_map")
+        if mode == "rotation_map":
+            return Mouse.sample_realistic_orientation(
+                setting.get("normalized_hand_min", [-0.3, -0.3]),
+                setting.get("normalized_hand_max", [0.3, 0.3]),
+                setting.get("forearm_length", 0.257),
+            )
+        if mode == "uniform":
+            return np.deg2rad(
+                np.random.uniform(
+                    setting.get("min_deg", -12.0),
+                    setting.get("max_deg", 27.0),
+                )
+            )
+        if mode in ("zero", "fixed"):
+            return np.deg2rad(float(setting.get("value_deg", 0.0)))
+        raise ValueError(f"Unknown initial mouse orientation type: {mode}")
+
     
     def reset(
         self,
@@ -87,6 +125,7 @@ class PnCGame:
         target_dir=None,
         target_rew=None,
         mouse_gain=None,
+        mouse_ori=None,
         max_target_pos_sample=100,
         return_reset_condition=True,
         **kwargs
@@ -101,7 +140,11 @@ class PnCGame:
 
         self.hand_pos = np.zeros(2) if hand_pos is None else np.array(hand_pos)
         self.hand_vel = np.zeros(2) if hand_vel is None else np.array(hand_vel)
-        self.mouse_ori = 0.0
+        self.mouse_ori = (
+            self._sample_initial_mouse_orientation()
+            if mouse_ori is None
+            else float(mouse_ori)
+        )
 
         if target_spd is not None: self.target_spd = target_spd
         else:
@@ -159,6 +202,9 @@ class PnCGame:
                 target_rad = self.target_rad,
                 target_rew = self.target_rew,
                 mouse_gain = self.mouse_gain,
+                effective_mouse_gain = self.cursor_gain,
+                cpi = self.cpi,
+                mouse_ori = self.mouse_ori,
             ))
 
 
@@ -222,18 +268,18 @@ class PnCGame:
             cursor_deltas, next_mouse_orientations = (
                 Mouse.get_cursor_displacements_from_desk_rotation(
                     hand_deltas,
-                    self.mouse_gain,
+                    self.cursor_gain,
                     self.mouse_ori,
                     self.mouse_rotation_gain_x,
                     self.mouse_rotation_gain_y,
                 )
             )
-            cursor_velocities = self.mouse_gain * Mouse.rot_mat(
+            cursor_velocities = self.cursor_gain * Mouse.rot_mat(
                 htraj_v[1:], -next_mouse_orientations
             )
         elif self.mouse_mapping == "linear":
-            cursor_deltas = self.mouse_gain * hand_deltas
-            cursor_velocities = self.mouse_gain * htraj_v[1:]
+            cursor_deltas = self.cursor_gain * hand_deltas
+            cursor_velocities = self.cursor_gain * htraj_v[1:]
             next_mouse_orientations = np.full(len(hand_deltas), self.mouse_ori)
         else:
             raise ValueError(f"Unknown mouse_mapping: {self.mouse_mapping}")
@@ -291,13 +337,13 @@ class PnCGame:
     def _cursor_delta_for_hand_plan(self, htraj_p, mouse_ori):
         hand_deltas = np.diff(htraj_p, axis=0)
         if self.mouse_mapping == "linear":
-            return self.mouse_gain * hand_deltas.sum(axis=0)
+            return self.cursor_gain * hand_deltas.sum(axis=0)
         if self.mouse_mapping != "rotational":
             raise ValueError(f"Unknown mouse_mapping: {self.mouse_mapping}")
 
         cursor_deltas, _ = Mouse.get_cursor_displacements_from_desk_rotation(
             hand_deltas,
-            self.mouse_gain,
+            self.cursor_gain,
             mouse_ori,
             self.mouse_rotation_gain_x,
             self.mouse_rotation_gain_y,
@@ -310,7 +356,7 @@ class PnCGame:
         if np.linalg.norm(intended_delta) == 0:
             return 0.0
 
-        hand_segment_deltas = np.diff(ctraj_p, axis=0) / self.mouse_gain
+        hand_segment_deltas = np.diff(ctraj_p, axis=0) / self.cursor_gain
 
         best_angle = 0.0
         search_width = np.pi / 4
@@ -322,7 +368,7 @@ class PnCGame:
             )
             cursor_deltas, _ = Mouse.get_cursor_displacements_from_desk_rotation(
                 rotated_hand_deltas,
-                self.mouse_gain,
+                self.cursor_gain,
                 mouse_ori,
                 self.mouse_rotation_gain_x,
                 self.mouse_rotation_gain_y,
@@ -339,37 +385,37 @@ class PnCGame:
             return Mouse.get_cursor_displacement_from_desk_rotation(
                 hand_start,
                 hand_end,
-                self.mouse_gain,
+                self.cursor_gain,
                 mouse_ori,
                 self.mouse_rotation_gain_x,
                 self.mouse_rotation_gain_y,
             )
         if self.mouse_mapping == "linear":
-            return self.mouse_gain * (hand_end - hand_start), mouse_ori
+            return self.cursor_gain * (hand_end - hand_start), mouse_ori
         raise ValueError(f"Unknown mouse_mapping: {self.mouse_mapping}")
     
 
     def _cursor_velocity_from_hand_velocity(self, hand_vel, mouse_ori):
         if self.mouse_mapping == "rotational":
-            return self.mouse_gain * Mouse.rot_mat(hand_vel, -mouse_ori)
+            return self.cursor_gain * Mouse.rot_mat(hand_vel, -mouse_ori)
         if self.mouse_mapping == "linear":
-            return self.mouse_gain * hand_vel
+            return self.cursor_gain * hand_vel
         raise ValueError(f"Unknown mouse_mapping: {self.mouse_mapping}")
     
 
     def _hand_delta_from_cursor_delta(self, cursor_delta):
         if self.mouse_mapping == "rotational":
-            return Mouse.rot_mat(cursor_delta / self.mouse_gain, self.mouse_ori)
+            return Mouse.rot_mat(cursor_delta / self.cursor_gain, self.mouse_ori)
         if self.mouse_mapping == "linear":
-            return cursor_delta / self.mouse_gain
+            return cursor_delta / self.cursor_gain
         raise ValueError(f"Unknown mouse_mapping: {self.mouse_mapping}")
     
 
     def _hand_velocity_from_cursor_velocity(self, cursor_vel):
         if self.mouse_mapping == "rotational":
-            return Mouse.rot_mat(cursor_vel / self.mouse_gain, self.mouse_ori)
+            return Mouse.rot_mat(cursor_vel / self.cursor_gain, self.mouse_ori)
         if self.mouse_mapping == "linear":
-            return cursor_vel / self.mouse_gain
+            return cursor_vel / self.cursor_gain
         raise ValueError(f"Unknown mouse_mapping: {self.mouse_mapping}")
     
 
@@ -392,12 +438,12 @@ class PnCGame:
                 theta += np.clip(self.mouse_plan_correction, 0.0, 1.0) * correction
             htraj_p = hand_pos + Mouse.rot_mat(
                 ctraj_p - ctraj_p[0], theta
-            ) / self.mouse_gain
-            htraj_v = Mouse.rot_mat(ctraj_v, theta) / self.mouse_gain
+            ) / self.cursor_gain
+            htraj_v = Mouse.rot_mat(ctraj_v, theta) / self.cursor_gain
             return htraj_p, htraj_v
 
-        htraj_p = hand_pos + (ctraj_p - ctraj_p[0]) / self.mouse_gain
-        htraj_v = ctraj_v / self.mouse_gain
+        htraj_p = hand_pos + (ctraj_p - ctraj_p[0]) / self.cursor_gain
+        htraj_v = ctraj_v / self.cursor_gain
         return htraj_p, htraj_v
 
 
@@ -456,7 +502,9 @@ class PnCGame:
             target_rad = self.target_rad,
             target_rew = self.target_rew,
             window_qt = self.window_qt,
-            mouse_gain = self.mouse_gain,
+            mouse_gain = self.cursor_gain,
+            mouse_base_gain = self.mouse_gain,
+            cpi = self.cpi,
             mouse_ori = np.array([np.cos(self.mouse_ori), np.sin(self.mouse_ori)]),
         )
     

@@ -100,6 +100,9 @@ class PnCEpisodeRecordDefault:
     def get_summary_result(self):
         target_vel = self.initial_task_cond["target_spd"] * cos_sin_array(self.initial_task_cond["target_dir"])
         traverse_length = np.sum(np.linalg.norm(np.diff(self.replay["cursor_pos"], axis=0), axis=1))
+        hand_traverse_length = np.sum(
+            np.linalg.norm(np.diff(self.replay["hand_pos"], axis=0), axis=1)
+        )
         click_rel_endpt = self.result.target_endpt - self.result.click_endpt
         target_distance = np.linalg.norm(self.initial_task_cond["target_pos"] - self.initial_task_cond["cursor_pos"])
         iod = np.log2(target_distance / (2 * self.initial_task_cond["target_rad"]) + 1)
@@ -107,6 +110,17 @@ class PnCEpisodeRecordDefault:
         timestamp = np.arange(self.replay["target_pos"].shape[0]) * self.intv.interp / 1000
         max_cursor_spd = np.max(derivative_central(timestamp[1:], 
                                             np.cumsum(np.linalg.norm(np.diff(self.replay["cursor_pos"], axis=0), axis=1))))
+        max_hand_spd = np.max(
+            derivative_central(
+                timestamp[1:],
+                np.cumsum(
+                    np.linalg.norm(
+                        np.diff(self.replay["hand_pos"], axis=0),
+                        axis=1,
+                    )
+                ),
+            )
+        )
 
         action_kc = self.actions["kc"].to_numpy().astype(int)
         act_click_indices = np.where((action_kc == 1) | (action_kc == 2))[0]
@@ -129,9 +143,10 @@ class PnCEpisodeRecordDefault:
             FIELD.HAND_POS_Y0: self.initial_task_cond["hand_pos"][CONST.Y],
             FIELD.HAND_VEL_X0: self.initial_task_cond["hand_vel"][CONST.X],
             FIELD.HAND_VEL_Y0: self.initial_task_cond["hand_vel"][CONST.Y],
+            FIELD.MOUSE_ORI0: self.initial_task_cond["mouse_ori"],
             FIELD.TARGET_DIST: target_distance,
             FIELD.TARGET_DIFF_ID: iod,
-            FIELD.MOUSE_GAIN: self.initial_task_cond["mouse_gain"],
+            FIELD.MOUSE_GAIN: self.initial_task_cond["effective_mouse_gain"],
 
             # Model parameter
             **self.param,
@@ -151,6 +166,8 @@ class PnCEpisodeRecordDefault:
             FIELD.CLICK_REL_ENDPT_Y: click_rel_endpt[CONST.Y],
             FIELD.TRAV_LEN: traverse_length,
             FIELD.MAX_CURSOR_SPD: max_cursor_spd,
+            FIELD.HAND_TRAV_LEN: hand_traverse_length,
+            FIELD.MAX_HAND_SPD: max_hand_spd,
             FIELD.MOTOR_EFFORT: self.result.motor_effort,
             FIELD.TRUNC: int(self.result.truncated),    # bool -> binary
 
@@ -207,6 +224,9 @@ class PnCEpisodeRecordDefault:
     def replay_and_save(self):
         # keys=["cursor_pos", "target_pos", "hand_pos", "cursor_vel", "target_vel", "hand_vel"]
         pnc_replay = PnCGame(config=self.task_config)
+        pnc_replay.cpi = float(
+            self.initial_task_cond.get("cpi", pnc_replay.cpi)
+        )
         pnc_replay.reset(**self.initial_task_cond)
         return pnc_replay.replay_and_save(self.htraj_p, self.htraj_v, self.intv.interp, unit='ms')
     
@@ -348,13 +368,18 @@ class PnCSimulator:
                 Path(__file__).parent.parent.parent, 
                 f"data/{FOLDER.DATA_RL_MODEL}/{model_name}/{FOLDER.MODEL_BEST}/best_model.zip"
             )
+        elif ckpt == 'last':
+            self.policy = os.path.join(
+                Path(__file__).parent.parent.parent,
+                f"data/{FOLDER.DATA_RL_MODEL}/{model_name}/last/last_model.zip"
+            )
         elif type(ckpt) is int:
             self.policy = os.path.join(
                 Path(__file__).parent.parent.parent, 
                 f"data/{FOLDER.DATA_RL_MODEL}/{model_name}/{FOLDER.MODEL_CHECKPT}/rl_model_{ckpt}_steps.zip"
             )
         else:
-            raise TypeError("Argument ckpt must be either int or 'best'.")
+            raise TypeError("Argument ckpt must be an integer, 'best', or 'last'.")
         
         self.model = SAC.load(self.policy)
         
