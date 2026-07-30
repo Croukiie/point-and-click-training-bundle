@@ -10,6 +10,8 @@ from scipy import interpolate
 import os.path
 from pathlib import Path
 
+from ..utils.mouse_sensitivity import INCH_TO_METERS
+
 
 rotation_map_rad = np.load(os.path.join(Path(__file__).parent.parent, "materials/rotation_map_rad.npy"))
 
@@ -113,6 +115,9 @@ class Mouse:
         mouse_orientation,
         rotation_gain_x_deg_per_cm=-3.0,
         rotation_gain_y_deg_per_cm=0.0,
+        mouse_cpi=None,
+        count_residual=None,
+        return_count_residual=False,
     ):
         hand_delta = np.array(hand_end_loc) - np.array(hand_start_loc)
         rotation_delta = np.deg2rad(
@@ -120,9 +125,15 @@ class Mouse:
              + rotation_gain_y_deg_per_cm * hand_delta[1]) * 100
         )
         next_mouse_orientation = mouse_orientation + rotation_delta
+        next_residual = (
+            np.zeros(2, dtype=float)
+            if count_residual is None
+            else np.asarray(count_residual, dtype=float)
+        )
 
         if np.allclose(hand_delta, 0):
-            return np.zeros(2), next_mouse_orientation
+            result = (np.zeros(2), next_mouse_orientation)
+            return (*result, next_residual) if return_count_residual else result
 
         if np.isclose(rotation_delta, 0):
             scale = 1.0
@@ -130,8 +141,21 @@ class Mouse:
             scale = 2 * np.sin(rotation_delta / 2) / rotation_delta
 
         sensor_rotation = -(mouse_orientation + rotation_delta / 2)
-        cursor_delta = cursor_gain * scale * Mouse.rot_mat(hand_delta, sensor_rotation)
-        return cursor_delta, next_mouse_orientation
+        sensor_displacement = scale * Mouse.rot_mat(hand_delta, sensor_rotation)
+        if mouse_cpi is not None:
+            raw_count = (
+                sensor_displacement * float(mouse_cpi) / INCH_TO_METERS
+                + next_residual
+            )
+            quantized_count = np.rint(raw_count)
+            next_residual = raw_count - quantized_count
+            sensor_displacement = (
+                quantized_count * INCH_TO_METERS / float(mouse_cpi)
+            )
+
+        cursor_delta = cursor_gain * sensor_displacement
+        result = (cursor_delta, next_mouse_orientation)
+        return (*result, next_residual) if return_count_residual else result
 
     @staticmethod
     def get_cursor_displacements_from_desk_rotation(
@@ -140,14 +164,31 @@ class Mouse:
         mouse_orientation,
         rotation_gain_x_deg_per_cm=-3.0,
         rotation_gain_y_deg_per_cm=0.0,
+        mouse_cpi=None,
+        count_residual=None,
+        return_count_residual=False,
     ):
         """Vectorized rotational mapping for one or more hand trajectories.
 
         ``hand_deltas`` has shape ``(..., n_segments, 2)``. Leading dimensions
         are treated as independent trajectories and are evaluated together.
         The returned orientations are the orientations *after* each segment.
+        When ``mouse_cpi`` is set, physical sensor counts are rounded to
+        integers while the sub-count residual is carried between segments.
         """
         hand_deltas = np.asarray(hand_deltas)
+        initial_residual = (
+            np.zeros(hand_deltas.shape[:-2] + (2,), dtype=float)
+            if count_residual is None
+            else np.asarray(count_residual, dtype=float)
+        )
+        if hand_deltas.shape[-2] == 0:
+            empty_orientation = np.empty(
+                hand_deltas.shape[:-2] + (0,), dtype=float
+            )
+            result = (hand_deltas.copy(), empty_orientation)
+            return (*result, initial_residual) if return_count_residual else result
+
         rotation_deltas = np.deg2rad(
             (
                 rotation_gain_x_deg_per_cm * hand_deltas[..., 0]
@@ -171,18 +212,48 @@ class Mouse:
         )
 
         sensor_rotations = -(previous_orientations + rotation_deltas / 2)
-        cursor_deltas = (
-            cursor_gain
-            * scales[..., np.newaxis]
+        sensor_displacements = (
+            scales[..., np.newaxis]
             * Mouse.rot_mat(hand_deltas, sensor_rotations)
         )
         # Match the scalar implementation's ``np.allclose(hand_delta, 0)``
         # branch while retaining the orientation update for tiny segments.
         near_zero_displacement = np.all(np.isclose(hand_deltas, 0), axis=-1)
-        cursor_deltas = np.where(
-            near_zero_displacement[..., np.newaxis], 0.0, cursor_deltas
+        sensor_displacements = np.where(
+            near_zero_displacement[..., np.newaxis],
+            0.0,
+            sensor_displacements,
         )
-        return cursor_deltas, next_orientations
+
+        next_residual = initial_residual
+        if mouse_cpi is not None:
+            raw_counts = (
+                sensor_displacements * float(mouse_cpi) / INCH_TO_METERS
+            )
+            cumulative_raw = (
+                np.cumsum(raw_counts, axis=-2)
+                + np.expand_dims(initial_residual, axis=-2)
+            )
+            cumulative_quantized = np.rint(cumulative_raw)
+            previous_quantized = np.concatenate(
+                (
+                    np.zeros_like(cumulative_quantized[..., :1, :]),
+                    cumulative_quantized[..., :-1, :],
+                ),
+                axis=-2,
+            )
+            quantized_counts = cumulative_quantized - previous_quantized
+            next_residual = (
+                cumulative_raw[..., -1, :]
+                - cumulative_quantized[..., -1, :]
+            )
+            sensor_displacements = (
+                quantized_counts * INCH_TO_METERS / float(mouse_cpi)
+            )
+
+        cursor_deltas = cursor_gain * sensor_displacements
+        result = (cursor_deltas, next_orientations)
+        return (*result, next_residual) if return_count_residual else result
 
     @staticmethod
     def rot_mat(p, rad):

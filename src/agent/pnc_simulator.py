@@ -30,6 +30,7 @@ from ..utils.myutils import load_config, get_compact_timestamp_str
 from ..utils.render import RENDER
 from ..utils.myplot import figure_grid, figure_save
 from ..utils.mymath import linear_normalize, np_interp_nd, cos_sin_array, derivative_central, linear_denormalize
+from ..utils.trajectory_features import cursor_curvature_features
 
 
 class PnCEpisodeRecordDefault:
@@ -100,6 +101,10 @@ class PnCEpisodeRecordDefault:
     def get_summary_result(self):
         target_vel = self.initial_task_cond["target_spd"] * cos_sin_array(self.initial_task_cond["target_dir"])
         traverse_length = np.sum(np.linalg.norm(np.diff(self.replay["cursor_pos"], axis=0), axis=1))
+        curvature_features = cursor_curvature_features(
+            self.replay["cursor_pos"],
+            target_position=self.initial_task_cond["target_pos"],
+        )
         hand_traverse_length = np.sum(
             np.linalg.norm(np.diff(self.replay["hand_pos"], axis=0), axis=1)
         )
@@ -170,6 +175,7 @@ class PnCEpisodeRecordDefault:
             FIELD.MAX_HAND_SPD: max_hand_spd,
             FIELD.MOTOR_EFFORT: self.result.motor_effort,
             FIELD.TRUNC: int(self.result.truncated),    # bool -> binary
+            **curvature_features,
 
             # Simulation related information
             FIELD.ACTION_KC: action_click

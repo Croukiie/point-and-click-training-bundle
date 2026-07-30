@@ -142,6 +142,16 @@ FIELD = Box(dict(
     HAND_TRAV_LEN = "raw_path_length_m",
     MAX_HAND_SPD = "raw_max_speed_m_s",
     MOTOR_EFFORT = "motor_effort",
+    CURSOR_TOTAL_ABS_TURN = "cursor_total_abs_turn_rad",
+    CURSOR_NET_TURN = "cursor_net_turn_rad",
+    CURSOR_MEAN_ABS_TURN = "cursor_mean_abs_turn_rad",
+    CURSOR_P90_ABS_TURN = "cursor_p90_abs_turn_rad",
+    CURSOR_TURN_ENERGY = "cursor_turn_energy_rad2",
+    CURSOR_MAX_DEV_NORM = "cursor_max_deviation_normalized",
+    CURSOR_PATH_EXCESS = "cursor_path_excess_ratio",
+    CURSOR_EARLY_ABS_TURN = "cursor_early_mean_abs_turn_rad",
+    CURSOR_MIDDLE_ABS_TURN = "cursor_middle_mean_abs_turn_rad",
+    CURSOR_LATE_ABS_TURN = "cursor_late_mean_abs_turn_rad",
 
     # Initial task conditions
     WINDOW_WIDTH = "window_width",

@@ -74,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     data.add_argument("--validation-trials", type=int, default=256)
     data.add_argument("--trajectory-downsample", type=int, default=20)
     data.add_argument("--data-config", default="default")
+    data.add_argument(
+        "--analyze-curvature",
+        action="store_true",
+        help="Write CPI/curvature correlations after dataset synthesis",
+    )
 
     amortizer = parser.add_argument_group("amortizer")
     amortizer.add_argument("--amortizer-name", default="PTE_CPI_24IN")
@@ -155,8 +160,28 @@ def main(argv=None) -> int:
             repeat=args.data_repeat,
             num_cpu=args.data_cpu,
         )
+        generated_dataset_path = Path(training.data_path)
         del training
         close_stage_resources()
+        if args.analyze_curvature:
+            from .analyze_cpi_curvature import analyze, _dataset_files
+
+            files = _dataset_files(generated_dataset_path)
+            rows = analyze(files)
+            output = generated_dataset_path / "curvature_cpi_correlation.csv"
+            import csv
+
+            with output.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+                writer.writeheader()
+                writer.writerows(rows)
+            print(f"CPI/curvature report: {output}")
+            for row in rows[:5]:
+                print(
+                    f"  {row['feature']}: "
+                    f"Spearman rho={row['spearman_rho']:.4f}, "
+                    f"Pearson r={row['pearson_r']:.4f}"
+                )
 
     if not args.skip_amortizer:
         amortizer_name = (

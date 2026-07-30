@@ -8,8 +8,9 @@ constraint:
   target_speed: 0.24
   
 
-default:
-  mouse_gain: 4.16
+default: &default
+  # 24-inch 16:9 Full HD: one raw count equals one 1920px screen pixel at 400 CPI.
+  mouse_gain: 4.357877685367455
   mouse_reference_cpi: 400
   cpi: 400
   mouse_mapping: rotational
@@ -18,8 +19,8 @@ default:
   mouse_plan_correction: 0.0
   initial_mouse_orientation:
     type: uniform
-    min_deg: -30.0
-    max_deg: 20.0
+    min_deg: -15.0
+    max_deg: 15.0
   range:
     window_width:
       max: 0.5313124474
@@ -42,6 +43,19 @@ default:
     id:
       uniform: True
 
+default_ori0:
+  <<: *default
+  initial_mouse_orientation:
+    type: fixed
+    value_deg: 0.0
+
+default_ori_asym:
+  <<: *default
+  initial_mouse_orientation:
+    type: uniform
+    min_deg: -10.0
+    max_deg: 20.0
+
 
 static_target:
   mouse_gain: 1
@@ -53,8 +67,8 @@ static_target:
   mouse_plan_correction: 0.0
   initial_mouse_orientation:
     type: uniform
-    min_deg: -30.0
-    max_deg: 20.0
+    min_deg: -15.0
+    max_deg: 15.0
   range:
     window_width:
       max: 0.5313124474
@@ -78,7 +92,8 @@ static_target:
       uniform: True
 
 static_target_window:
-  mouse_gain: 4.16
+  # Same 24-inch Full HD calibration as the default task.
+  mouse_gain: 4.357877685367455
   mouse_reference_cpi: 400
   cpi: 400
   mouse_mapping: rotational
@@ -87,8 +102,8 @@ static_target_window:
   mouse_plan_correction: 0.0
   initial_mouse_orientation:
     type: uniform
-    min_deg: -30.0
-    max_deg: 20.0
+    min_deg: -15.0
+    max_deg: 15.0
   range:
     window_width:
       max: 0.5313124474

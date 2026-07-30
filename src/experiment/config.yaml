@@ -9,7 +9,9 @@ experiment:
   practice_trials_per_cpi: 15
   measured_trials_per_cpi: 128
   cpi_values: [400, 800, 1600]
-  mouse_gain: 4.16
+  mousepad_conditions: [firm, soft, glass]
+  # width_m * reference_cpi / (0.0254 * width_px)
+  mouse_gain: 4.357877685367455
   mouse_reference_cpi: 400
   target_id_range: [2.5, 7.2]
   seed: 20260708

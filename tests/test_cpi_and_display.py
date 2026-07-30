@@ -28,10 +28,24 @@ class CpiAndDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(width, 0.5313124474, places=9)
         self.assertAlmostEqual(height, 0.2988632517, places=9)
 
+    def test_initial_mouse_gain_matches_full_hd_pixel_pitch(self):
+        width = ENV.default.range.window_width.max
+        reference_cpi = ENV.default.mouse_reference_cpi
+        expected_gain = width * reference_cpi / (0.0254 * 1920)
+
+        self.assertAlmostEqual(ENV.default.mouse_gain, expected_gain, places=14)
+        self.assertAlmostEqual(
+            cursor_meters_per_count(ENV.default.mouse_gain, reference_cpi),
+            width / 1920,
+            places=15,
+        )
+
     def test_cpi_scales_cursor_motion_linearly(self):
         game = PnCGame("default")
+        game.mouse_rotation_gain_x = 0.0
+        game.mouse_rotation_gain_y = 0.0
         hand_start = np.array([0.0, 0.0])
-        hand_end = np.array([0.01, 0.004])
+        hand_end = np.array([17.0, -8.0]) * physical_meters_per_count(400)
 
         game.cpi = 400
         delta_400, _ = game._cursor_delta_from_hand_segment(
@@ -44,6 +58,54 @@ class CpiAndDisplayTests(unittest.TestCase):
 
         np.testing.assert_allclose(delta_1600, 4.0 * delta_400)
         self.assertAlmostEqual(game.cursor_gain, 4.0 * game.mouse_gain)
+
+    def test_sub_count_residual_is_carried_between_segments(self):
+        game = PnCGame("default")
+        game.cpi = 400
+        game.mouse_rotation_gain_x = 0.0
+        game.mouse_rotation_gain_y = 0.0
+        segment = np.array([0.4, 0.0]) * physical_meters_per_count(400)
+
+        first_delta, _, residual = game._cursor_delta_from_hand_segment(
+            np.zeros(2),
+            segment,
+            mouse_ori=0.0,
+            count_residual=np.zeros(2),
+            return_count_residual=True,
+        )
+        second_delta, _, residual = game._cursor_delta_from_hand_segment(
+            segment,
+            2 * segment,
+            mouse_ori=0.0,
+            count_residual=residual,
+            return_count_residual=True,
+        )
+
+        np.testing.assert_allclose(first_delta, np.zeros(2))
+        self.assertAlmostEqual(
+            second_delta[0],
+            cursor_meters_per_count(game.mouse_gain, 400),
+        )
+        np.testing.assert_allclose(residual, [-0.2, 0.0], atol=1e-12)
+
+    def test_virtual_rollout_does_not_commit_sensor_residual(self):
+        game = PnCGame("default")
+        game.cpi = 400
+        game.mouse_rotation_gain_x = 0.0
+        game.mouse_rotation_gain_y = 0.0
+        segment = np.array([0.4, 0.0]) * physical_meters_per_count(400)
+        hand_positions = np.array([[0.0, 0.0], segment])
+        hand_velocities = np.zeros_like(hand_positions)
+
+        game.get_cursor_and_hand_update(hand_positions, hand_velocities)
+        np.testing.assert_allclose(game.mouse_count_residual, np.zeros(2))
+
+        game.update_cursor_and_hand_move(hand_positions, hand_velocities)
+        np.testing.assert_allclose(
+            game.mouse_count_residual,
+            [0.4, 0.0],
+            atol=1e-12,
+        )
 
     def test_same_cursor_plan_requires_less_hand_motion_at_high_cpi(self):
         game = PnCGame("default")
@@ -94,10 +156,10 @@ class CpiAndDisplayTests(unittest.TestCase):
         )
 
         self.assertGreater(sampled.std(), np.deg2rad(2))
-        self.assertGreaterEqual(sampled.min(), np.deg2rad(-30))
-        self.assertLessEqual(sampled.max(), np.deg2rad(20))
-        self.assertLess(sampled.min(), np.deg2rad(-27))
-        self.assertGreater(sampled.max(), np.deg2rad(17))
+        self.assertGreaterEqual(sampled.min(), np.deg2rad(-15))
+        self.assertLessEqual(sampled.max(), np.deg2rad(15))
+        self.assertLess(sampled.min(), np.deg2rad(-13))
+        self.assertGreater(sampled.max(), np.deg2rad(13))
 
         condition = game.reset(mouse_ori=0.123, return_reset_condition=True)
         self.assertAlmostEqual(condition.mouse_ori, 0.123)
@@ -111,21 +173,49 @@ class CpiAndDisplayTests(unittest.TestCase):
             [game.reset(return_reset_condition=True).mouse_ori for _ in range(1000)]
         )
 
-        self.assertGreaterEqual(sampled.min(), -30)
-        self.assertLessEqual(sampled.max(), 20)
-        self.assertLess(sampled.min(), -27)
-        self.assertGreater(sampled.max(), 17)
+        self.assertGreaterEqual(sampled.min(), -15)
+        self.assertLessEqual(sampled.max(), 15)
+        self.assertLess(sampled.min(), -13)
+        self.assertGreater(sampled.max(), 13)
+
+    def test_control_orientation_configs_are_available(self):
+        zero_game = PnCGame("default_ori0")
+        zero_samples = [
+            zero_game.reset(return_reset_condition=True).mouse_ori
+            for _ in range(10)
+        ]
+        np.testing.assert_allclose(zero_samples, np.zeros(10))
+
+        asym_game = PnCGame("default_ori_asym")
+        asym_samples = np.degrees(
+            [
+                asym_game.reset(return_reset_condition=True).mouse_ori
+                for _ in range(1000)
+            ]
+        )
+        self.assertGreaterEqual(asym_samples.min(), -10)
+        self.assertLessEqual(asym_samples.max(), 20)
+        self.assertLess(asym_samples.min(), -8)
+        self.assertGreater(asym_samples.max(), 18)
+
+    def test_cpi_cursor_velocity_observation_range_is_wide_enough(self):
+        env = PnCEnvDefault(agent_name="classic", pnc_env_name="default")
+        self.assertEqual(
+            list(env.user.observation.cursor_vel.max),
+            [20.0, 20.0],
+        )
 
     def test_experiment_count_conversion_matches_rl_gain(self):
-        per_count = cursor_meters_per_count(4.16, 400)
+        mouse_gain = ENV.default.mouse_gain
+        per_count = cursor_meters_per_count(mouse_gain, 400)
         hand_distance = 0.01
         counts_400 = hand_distance / physical_meters_per_count(400)
         counts_1600 = hand_distance / physical_meters_per_count(1600)
 
-        self.assertAlmostEqual(counts_400 * per_count, hand_distance * 4.16)
+        self.assertAlmostEqual(counts_400 * per_count, hand_distance * mouse_gain)
         self.assertAlmostEqual(
             counts_1600 * per_count,
-            hand_distance * effective_cursor_gain(1600, 4.16, 400),
+            hand_distance * effective_cursor_gain(1600, mouse_gain, 400),
         )
 
     def test_inference_uses_cursor_and_hand_trajectories(self):

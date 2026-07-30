@@ -21,13 +21,18 @@ Windows PowerShell:
 
 The task uses the physical dimensions of a 24-inch 16:9 display
 (`0.5313 x 0.2989 m`). CPI is a policy parameter sampled from 400 to 1600 in
-steps of 10. The historical mouse gain of 4.16 is calibrated at 400 CPI, so
-the effective gain is `4.16 * CPI / 400`. Every trial independently samples
-its initial physical-mouse orientation from a continuous uniform distribution
-between `-30` and `+20` degrees.
+steps of 10. For the 24-inch Full HD profile, the initial mouse gain is
+`0.5313124474 * 400 / (0.0254 * 1920) = 4.357877685367455`. This makes one
+raw count equal one horizontal screen pixel at the 400-CPI reference. The
+effective gain is therefore `4.357877685367455 * CPI / 400`. Physical hand displacement is
+quantized to integer sensor counts and the sub-count residual is carried
+between executed segments. Every trial independently samples its initial
+physical-mouse orientation from a continuous uniform distribution between
+`-15` and `+15` degrees. The `default_ori0` and `default_ori_asym` task
+configurations provide controlled 0-degree and -10/+20-degree alternatives.
 
 기본 full training은 `src/config/rl_config.yaml`의 `simple` 설정을 사용합니다.
-현재 기본 step 수는 `10,000,000`입니다.
+현재 기본 step 수는 `30,000,000`입니다.
 
 ```bash
 bash scripts/run_full_rl.sh
@@ -46,6 +51,52 @@ python -m src.rl.sac_trainer \
 ```
 
 `--num_cpu`는 rollout environment 병렬 개수입니다. 사용하는 머신의 물리 코어 수를 넘기지 않는 것을 권장합니다.
+
+## Yonsei AI Data Center
+
+The bundle includes a Slurm launcher configured for the Yonsei RTX 3090
+partition (`big_suma_rtx3090`, `big_qos`). On the login node, create the
+environment once:
+
+```bash
+cd ~/point-and-click-training-bundle
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-rl.txt
+```
+
+Submit the full 30-million-step run:
+
+```bash
+sbatch run_bundle_yonsei.slurm
+```
+
+The defaults use one GPU, 64 rollout workers, the `default` 3x512 SAC
+configuration, and the symmetric `default` task orientation. Parameters can be
+overridden at submission without editing the script:
+
+```bash
+sbatch --export=ALL,RUN_NAME=pnc_ori0,PNC_TYPE=default_ori0 run_bundle_yonsei.slurm
+sbatch --export=ALL,RUN_NAME=pnc_asym,PNC_TYPE=default_ori_asym run_bundle_yonsei.slurm
+sbatch --export=ALL,RUN_NAME=pnc_smoke,STEPS=10000,NUM_CPU=4 run_bundle_yonsei.slurm
+```
+
+To resume a checkpoint:
+
+```bash
+sbatch --export=ALL,RUN_NAME=pnc_resume,LOAD_MODEL=data/pnc_model/<run>/checkpoint/<model>.zip,LOAD_REPLAY_BUFFER=data/pnc_model/<run>/checkpoint/<buffer>.pkl run_bundle_yonsei.slurm
+```
+
+Submit the complete RL -> dataset -> amortizer pipeline with one command:
+
+```bash
+bash submit_bundle_pipeline_yonsei.sh
+```
+
+This submits two Slurm jobs. The 128-GB dataset/amortizer job has an `afterok`
+dependency and starts only after the 30-million-step RL job succeeds. This is
+safer than putting the whole pipeline inside a single three-day allocation.
 
 ## Device
 
@@ -228,16 +279,29 @@ parameter sets, with 64 trials per set:
 .\.venv\Scripts\python.exe -m src.scripts.all_in_one_run
 ```
 
-The CPI amortizer uses both per-trial summaries and 20 Hz trajectories. Its
-trajectory encoder receives time deltas, cursor position, physical hand
-position, and cursor-to-target relative position. Keeping cursor and hand
-motion together makes their displacement ratio, and therefore CPI, observable.
+Use the `curvature` data profile for CPI inference. It calculates ten
+scale-robust curvature descriptors from the cursor replay at the simulator's
+full internal resolution, before the auxiliary trajectory is resampled to
+20 Hz. The profile deliberately excludes physical hand coordinates and
+CPI-derived raw distances, so the target CPI is not leaked into the input.
+The remaining trajectory encoder receives only time deltas, cursor position,
+and cursor-to-target relative position.
 
 To reuse an existing RL run:
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.scripts.all_in_one_run `
-  --skip-rl --rl-model <run_name> --rl-checkpoint best
+  --skip-rl --rl-model <run_name> --rl-checkpoint best `
+  --data-config curvature
+```
+
+After dataset generation, rank the curvature features by their measured CPI
+association. The analysis averages trials per simulated parameter set before
+computing Pearson and Spearman correlations:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.scripts.analyze_cpi_curvature `
+  data\amortizer\dataset\<dataset_directory>
 ```
 
 ## Human CPI experiment
@@ -254,3 +318,13 @@ surface as the RL environment. Start the local browser experiment with:
 ```powershell
 .\.venv\Scripts\python.exe -m src.experiment.web_experiment_server
 ```
+
+Record the physical mousepad as a session-level condition. Run one session per
+surface:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.experiment.web_experiment_server --mousepad-condition firm
+```
+
+Accepted values are `firm`, `soft`, `glass`, and `unspecified`. The condition
+is written to session metadata and to every raw-event, frame, and trial row.

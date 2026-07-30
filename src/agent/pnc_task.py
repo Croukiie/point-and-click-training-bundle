@@ -14,6 +14,7 @@ from ..utils.mymath import (
     cos_sin_array,
     symmetric_value
 )
+from ..utils.mouse_sensitivity import INCH_TO_METERS
 
 MOUSE_PAD_SIZE = 1.5    # Hand cannot exceed this area
 
@@ -39,8 +40,8 @@ class PnCGame:
             "initial_mouse_orientation",
             {
                 "type": "uniform",
-                "min_deg": -30.0,
-                "max_deg": 20.0,
+                "min_deg": -15.0,
+                "max_deg": 15.0,
             },
         )
 
@@ -76,6 +77,7 @@ class PnCGame:
         self.hand_pos = np.zeros(2)
         self.hand_vel = np.zeros(2)
         self.mouse_ori = 0.0
+        self.mouse_count_residual = np.zeros(2)
 
         self.target_pos = np.zeros(2)
         self.target_spd = 0.0
@@ -103,8 +105,8 @@ class PnCGame:
         if mode == "uniform":
             return np.deg2rad(
                 np.random.uniform(
-                    setting.get("min_deg", -12.0),
-                    setting.get("max_deg", 27.0),
+                    setting.get("min_deg", -15.0),
+                    setting.get("max_deg", 15.0),
                 )
             )
         if mode in ("zero", "fixed"):
@@ -187,6 +189,7 @@ class PnCGame:
         self.target_rew = np.random.choice(TARGET_SCORE) if target_rew is None else target_rew
 
         if mouse_gain is not None: self.mouse_gain = mouse_gain
+        self.mouse_count_residual = np.zeros(2)
 
         if return_reset_condition:
             return Box(dict(
@@ -243,8 +246,14 @@ class PnCGame:
             self.cursor_vel,
             self.hand_pos,
             self.hand_vel,
-            self.mouse_ori
-        ) = self.get_cursor_and_hand_update(htraj_p, htraj_v, return_mouse_ori=True)
+            self.mouse_ori,
+            self.mouse_count_residual,
+        ) = self.get_cursor_and_hand_update(
+            htraj_p,
+            htraj_v,
+            return_mouse_ori=True,
+            return_count_residual=True,
+        )
 
 
 
@@ -255,6 +264,7 @@ class PnCGame:
         cursor_pos=None,
         return_traj=False,
         return_mouse_ori=False,
+        return_count_residual=False,
     ):
         # We are assuming the infinite space for mouse pad
         # To limit the range of hand area,
@@ -262,23 +272,52 @@ class PnCGame:
         virt_hand_pos = self.hand_pos + htraj_p[-1] - htraj_p[0]
         virt_hand_vel = htraj_v[-1]
         virt_mouse_ori = self.mouse_ori
+        virt_count_residual = np.asarray(
+            self.mouse_count_residual, dtype=float
+        ).copy()
 
         hand_deltas = np.diff(htraj_p, axis=0)
         if self.mouse_mapping == "rotational":
-            cursor_deltas, next_mouse_orientations = (
+            cursor_deltas, next_mouse_orientations, virt_count_residual = (
                 Mouse.get_cursor_displacements_from_desk_rotation(
                     hand_deltas,
                     self.cursor_gain,
                     self.mouse_ori,
                     self.mouse_rotation_gain_x,
                     self.mouse_rotation_gain_y,
+                    mouse_cpi=self.cpi,
+                    count_residual=virt_count_residual,
+                    return_count_residual=True,
                 )
             )
             cursor_velocities = self.cursor_gain * Mouse.rot_mat(
                 htraj_v[1:], -next_mouse_orientations
             )
         elif self.mouse_mapping == "linear":
-            cursor_deltas = self.cursor_gain * hand_deltas
+            raw_counts = (
+                hand_deltas * self.cpi / INCH_TO_METERS
+            )
+            cumulative_raw = (
+                np.cumsum(raw_counts, axis=0)
+                + virt_count_residual[np.newaxis, :]
+            )
+            cumulative_quantized = np.rint(cumulative_raw)
+            previous_quantized = np.concatenate(
+                (
+                    np.zeros_like(cumulative_quantized[:1]),
+                    cumulative_quantized[:-1],
+                ),
+                axis=0,
+            )
+            quantized_counts = cumulative_quantized - previous_quantized
+            if len(cumulative_raw):
+                virt_count_residual = (
+                    cumulative_raw[-1] - cumulative_quantized[-1]
+                )
+            quantized_displacements = (
+                quantized_counts * INCH_TO_METERS / self.cpi
+            )
+            cursor_deltas = self.cursor_gain * quantized_displacements
             cursor_velocities = self.cursor_gain * htraj_v[1:]
             next_mouse_orientations = np.full(len(hand_deltas), self.mouse_ori)
         else:
@@ -312,9 +351,17 @@ class PnCGame:
             virt_cursor_vel = np.array(virt_cursor_vel)
             virt_mouse_ori = np.array(virt_mouse_ori)
 
+        result = [
+            virt_cursor_pos,
+            virt_cursor_vel,
+            virt_hand_pos,
+            virt_hand_vel,
+        ]
         if return_mouse_ori:
-            return virt_cursor_pos, virt_cursor_vel, virt_hand_pos, virt_hand_vel, virt_mouse_ori
-        return virt_cursor_pos, virt_cursor_vel, virt_hand_pos, virt_hand_vel
+            result.append(virt_mouse_ori)
+        if return_count_residual:
+            result.append(virt_count_residual)
+        return tuple(result)
 
 
     def get_mouse_orientation_update(self, htraj_p):
@@ -380,7 +427,19 @@ class PnCGame:
         return best_angle
 
 
-    def _cursor_delta_from_hand_segment(self, hand_start, hand_end, mouse_ori):
+    def _cursor_delta_from_hand_segment(
+        self,
+        hand_start,
+        hand_end,
+        mouse_ori,
+        count_residual=None,
+        return_count_residual=False,
+    ):
+        residual = (
+            self.mouse_count_residual
+            if count_residual is None
+            else count_residual
+        )
         if self.mouse_mapping == "rotational":
             return Mouse.get_cursor_displacement_from_desk_rotation(
                 hand_start,
@@ -389,9 +448,30 @@ class PnCGame:
                 mouse_ori,
                 self.mouse_rotation_gain_x,
                 self.mouse_rotation_gain_y,
+                mouse_cpi=self.cpi,
+                count_residual=residual,
+                return_count_residual=return_count_residual,
             )
         if self.mouse_mapping == "linear":
-            return self.cursor_gain * (hand_end - hand_start), mouse_ori
+            hand_delta = np.asarray(hand_end) - np.asarray(hand_start)
+            raw_count = (
+                hand_delta * self.cpi / INCH_TO_METERS
+                + np.asarray(residual, dtype=float)
+            )
+            quantized_count = np.rint(raw_count)
+            next_residual = raw_count - quantized_count
+            cursor_delta = (
+                self.cursor_gain
+                * quantized_count
+                * INCH_TO_METERS
+                / self.cpi
+            )
+            result = (cursor_delta, mouse_ori)
+            return (
+                (*result, next_residual)
+                if return_count_residual
+                else result
+            )
         raise ValueError(f"Unknown mouse_mapping: {self.mouse_mapping}")
     
 
@@ -505,6 +585,7 @@ class PnCGame:
             mouse_gain = self.cursor_gain,
             mouse_base_gain = self.mouse_gain,
             cpi = self.cpi,
+            mouse_count_residual = self.mouse_count_residual.copy(),
             mouse_ori = np.array([np.cos(self.mouse_ori), np.sin(self.mouse_ori)]),
         )
     

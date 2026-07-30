@@ -38,6 +38,7 @@ from ..utils.mouse_sensitivity import (
     physical_meters_per_count,
     positive_cpi,
 )
+from ..utils.trajectory_features import cursor_curvature_features
 
 RI_MOUSE_LEFT_BUTTON_DOWN = 0x0001
 try:
@@ -233,6 +234,7 @@ class PointAndClickExperiment:
         self.display_cfg = config["display"]
         self.appearance = config["appearance"]
         self.input_backend = resolve_native_input_backend(args.input_backend)
+        self.mousepad_condition = args.mousepad_condition
         self.virtual_size = tuple(float(v) for v in self.display_cfg["virtual_size_m"])
         self.requested_resolution = tuple(int(v) for v in self.display_cfg["resolution_px"])
         self.refresh_hz = int(self.exp["refresh_hz"])
@@ -299,6 +301,7 @@ class PointAndClickExperiment:
             },
             "hardware": {
                 "mouse_model": self.args.mouse_model,
+                "mousepad_condition": self.mousepad_condition,
                 "declared_os_pointer_speed": self.args.os_pointer_speed,
                 "declared_pointer_acceleration": self.args.pointer_acceleration,
                 "display_profile_name": self.display_cfg.get("profile_name", "not_reported"),
@@ -813,6 +816,7 @@ class PointAndClickExperiment:
                     "session_id": self.session_id, "trial_id": trial_id, "phase": phase,
                     "trial_stage": trial_stage,
                     "block_index": block_index, "cpi": cpi,
+                    "mousepad_condition": self.mousepad_condition,
                     "input_backend": self.input_backend,
                     "event_index": event_index,
                     "timestamp_ns": raw.timestamp_ns,
@@ -896,6 +900,7 @@ class PointAndClickExperiment:
                 "session_id": self.session_id, "trial_id": trial_id, "phase": phase,
                 "trial_stage": trial_stage,
                 "block_index": block_index, "cpi": cpi,
+                "mousepad_condition": self.mousepad_condition,
                 "input_backend": self.input_backend,
                 "frame_index": frame_index,
                 "frame_start_ns": frame_start_ns, "present_return_ns": present_ns,
@@ -929,11 +934,21 @@ class PointAndClickExperiment:
         mean_polling_interval = float(np.mean(raw_dt_values)) if raw_dt_values.size else None
         std_polling_interval = float(np.std(raw_dt_values)) if raw_dt_values.size else None
         max_polling_gap = float(np.max(raw_dt_values)) if raw_dt_values.size else None
+        cursor_points = np.asarray(
+            [[cursor_start[0], cursor_start[1]]]
+            + [[row["cursor_x_m"], row["cursor_y_m"]] for row in raw_rows],
+            dtype=np.float64,
+        )
+        curvature_features = cursor_curvature_features(
+            cursor_points,
+            target_position=[template.target_x_m, template.target_y_m],
+        )
         summary = {
             "session_id": self.session_id, "trial_id": trial_id,
             "template_id": template.template_id, "phase": phase,
             "trial_stage": trial_stage,
             "block_index": block_index, "cpi": cpi,
+            "mousepad_condition": self.mousepad_condition,
             "input_backend": self.input_backend,
             "attempt": attempt,
             "valid": valid, "invalid_reason": invalid_reason,
@@ -984,6 +999,7 @@ class PointAndClickExperiment:
             "mean_polling_interval_ns": mean_polling_interval,
             "std_polling_interval_ns": std_polling_interval,
             "max_polling_gap_ns": max_polling_gap,
+            **curvature_features,
         }
         events_log.append({
             "event": "trial_end", "session_id": self.session_id, "trial_id": trial_id,
@@ -1036,12 +1052,14 @@ class PointAndClickExperiment:
                 self.instruction_screen([
                     f"Block {block_index}/{len(self.cpi_order)} - {cpi} CPI",
                     f"Set the mouse hardware to {cpi} CPI.",
+                    f"Mousepad condition: {self.mousepad_condition}.",
                     "Do not change the Windows pointer sensitivity.",
                     "Press SPACE when you are ready.",
                 ])
                 logger.submit_event({
                     "event": "block_start", "session_id": self.session_id,
                     "block_index": block_index, "cpi": cpi,
+                    "mousepad_condition": self.mousepad_condition,
                     "timestamp_ns": time.perf_counter_ns(),
                     "input_backend": self.input_backend,
                 })
@@ -1105,6 +1123,7 @@ class PointAndClickExperiment:
                 logger.submit_event({
                     "event": "block_end", "session_id": self.session_id,
                     "block_index": block_index, "cpi": cpi,
+                    "mousepad_condition": self.mousepad_condition,
                     "timestamp_ns": time.perf_counter_ns(),
                     "input_backend": self.input_backend,
                 })
@@ -1183,6 +1202,11 @@ def build_parser():
     parser.add_argument("--mouse-experience", default="not_reported")
     parser.add_argument("--gaming-hours", type=float)
     parser.add_argument("--mouse-model", default="not_reported")
+    parser.add_argument(
+        "--mousepad-condition",
+        choices=("firm", "soft", "glass", "unspecified"),
+        default="unspecified",
+    )
     parser.add_argument("--os-pointer-speed", default="not_reported")
     parser.add_argument("--pointer-acceleration", choices=["on", "off", "unknown"], default="unknown")
     parser.add_argument("--notes", default="")

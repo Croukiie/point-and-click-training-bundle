@@ -37,6 +37,7 @@ from ..utils.mouse_sensitivity import (
     physical_meters_per_count,
     positive_cpi,
 )
+from ..utils.trajectory_features import cursor_curvature_features
 
 RI_MOUSE_LEFT_BUTTON_DOWN = 0x0001
 try:
@@ -154,7 +155,13 @@ def validate_fixed_display_profile(
 
 
 class WebExperimentServer:
-    def __init__(self, config: dict[str, Any], output_root: Path, input_backend: str = "auto"):
+    def __init__(
+        self,
+        config: dict[str, Any],
+        output_root: Path,
+        input_backend: str = "auto",
+        mousepad_condition: str = "unspecified",
+    ):
         self.config = config
         self.exp = config["experiment"]
         self.mouse_reference_cpi = positive_cpi(
@@ -167,6 +174,7 @@ class WebExperimentServer:
         )
         self.output_root = output_root
         self.input_backend = resolve_input_backend(input_backend)
+        self.mousepad_condition = mousepad_condition
         self.raw_mouse = (
             RawInputMouse()
             if self.input_backend == BACKEND_WINDOWS_RAW_INPUT
@@ -362,6 +370,7 @@ class WebExperimentServer:
         hardware["display_calibration"] = self.display_calibration
         hardware["declared_resolution_px"] = self.display_calibration["resolution_px"]
         hardware["declared_refresh_hz"] = self.display_calibration["refresh_hz"]
+        hardware["mousepad_condition"] = self.mousepad_condition
         self.participant_id = participant_id
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{participant_id}_web"
         cpi_values = [int(v) for v in self.exp["cpi_values"]]
@@ -441,6 +450,7 @@ class WebExperimentServer:
         await self._send({
             "type": "session_ready", "session_id": self.session_id,
             "cpi_order": self.cpi_order,
+            "mousepad_condition": self.mousepad_condition,
             "templates": [item.to_dict() for item in self.templates],
             "experiment": self.exp,
             "display": self.config["display"],
@@ -644,7 +654,9 @@ class WebExperimentServer:
             "session_id": self.session_id, "trial_id": trial["trial_id"],
             "phase": trial["phase"], "trial_stage": trial["trial_stage"],
             "block_index": trial["block_index"],
-            "cpi": trial["cpi"], "input_backend": self.input_backend,
+            "cpi": trial["cpi"],
+            "mousepad_condition": self.mousepad_condition,
+            "input_backend": self.input_backend,
             "event_index": trial["event_index"],
             "timestamp_ns": timestamp_ns,
             "time_from_onset_ns": timestamp_ns - trial["onset_ns"],
@@ -851,7 +863,9 @@ class WebExperimentServer:
                 "session_id": self.session_id, "trial_id": trial["trial_id"],
                 "phase": trial["phase"], "trial_stage": trial["trial_stage"],
                 "block_index": trial["block_index"],
-                "cpi": trial["cpi"], "input_backend": self.input_backend,
+                "cpi": trial["cpi"],
+                "mousepad_condition": self.mousepad_condition,
+                "input_backend": self.input_backend,
                 "frame_index": index,
                 "frame_start_ns": "", "present_return_ns": "",
                 "time_from_onset_ns": round(
@@ -914,11 +928,24 @@ class WebExperimentServer:
         max_polling_gap = (
             float(np.max(raw_dt_values)) if raw_dt_values.size else None
         )
+        cursor_points = np.asarray(
+            [[trial["cursor_start"][0], trial["cursor_start"][1]]]
+            + [
+                [row["cursor_x_m"], row["cursor_y_m"]]
+                for row in trial["raw_rows"]
+            ],
+            dtype=np.float64,
+        )
+        curvature_features = cursor_curvature_features(
+            cursor_points,
+            target_position=[template.target_x_m, template.target_y_m],
+        )
         summary = {
             "session_id": self.session_id, "trial_id": trial["trial_id"],
             "template_id": template.template_id, "phase": trial["phase"],
             "trial_stage": trial["trial_stage"],
             "block_index": trial["block_index"], "cpi": trial["cpi"],
+            "mousepad_condition": self.mousepad_condition,
             "input_backend": self.input_backend,
             "attempt": trial["attempt"], "valid": trial["valid"],
             "invalid_reason": "" if trial["valid"] else trial["outcome"],
@@ -971,6 +998,7 @@ class WebExperimentServer:
             "mean_polling_interval_ns": mean_polling_interval,
             "std_polling_interval_ns": std_polling_interval,
             "max_polling_gap_ns": max_polling_gap,
+            **curvature_features,
             "browser_first_movement_ms": client.get("first_movement_ms"),
             "browser_click_ms": client.get("click_ms"), "browser_end_ms": client.get("end_ms"),
             "pointer_lock_raw_requested": client.get("pointer_lock_raw_requested"),
@@ -1034,6 +1062,7 @@ def create_app(
     config: dict[str, Any],
     output_root: Path,
     input_backend: str = "auto",
+    mousepad_condition: str = "unspecified",
 ) -> web.Application:
     @web.middleware
     async def no_cache_static(request: web.Request, handler):
@@ -1043,7 +1072,12 @@ def create_app(
             response.headers["Pragma"] = "no-cache"
         return response
 
-    server = WebExperimentServer(config, output_root, input_backend=input_backend)
+    server = WebExperimentServer(
+        config,
+        output_root,
+        input_backend=input_backend,
+        mousepad_condition=mousepad_condition,
+    )
     app = web.Application(middlewares=[no_cache_static])
     app["experiment_server"] = server
     app.router.add_get("/", server.index)
@@ -1062,6 +1096,11 @@ def build_parser():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--mousepad-condition",
+        choices=("firm", "soft", "glass", "unspecified"),
+        default="unspecified",
+    )
     parser.add_argument(
         "--input-backend",
         choices=("auto", BACKEND_WINDOWS_RAW_INPUT, BACKEND_BROWSER_POINTER_LOCK),
@@ -1082,9 +1121,15 @@ def main():
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     print(f"Point-and-click experiment: {url}")
     print(f"Input backend: {resolve_input_backend(args.input_backend)}")
+    print(f"Mousepad condition: {args.mousepad_condition}")
     print("Keep this window open during data collection. Press Ctrl+C to stop.")
     web.run_app(
-        create_app(config, args.output_root, input_backend=args.input_backend),
+        create_app(
+            config,
+            args.output_root,
+            input_backend=args.input_backend,
+            mousepad_condition=args.mousepad_condition,
+        ),
         host=args.host,
         port=args.port,
         print=None,

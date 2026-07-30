@@ -113,13 +113,19 @@ class VectorizedMathTests(unittest.TestCase):
     def test_vectorized_mouse_mapping_matches_segment_loop(self):
         rng = np.random.default_rng(7)
         hand_deltas = rng.normal(0, 0.02, size=(12, 2))
+        cursor_gain = PnCGame("default").mouse_gain
         expected_deltas = []
         expected_orientations = []
         orientation = 0.37
         hand_position = np.array([0.1, -0.2])
         for delta in hand_deltas:
             cursor_delta, orientation = Mouse.get_cursor_displacement_from_desk_rotation(
-                hand_position, hand_position + delta, 4.16, orientation, -3.0, 1.2
+                hand_position,
+                hand_position + delta,
+                cursor_gain,
+                orientation,
+                -3.0,
+                1.2,
             )
             expected_deltas.append(cursor_delta)
             expected_orientations.append(orientation)
@@ -127,13 +133,59 @@ class VectorizedMathTests(unittest.TestCase):
 
         actual_deltas, actual_orientations = (
             Mouse.get_cursor_displacements_from_desk_rotation(
-                hand_deltas, 4.16, 0.37, -3.0, 1.2
+                hand_deltas, cursor_gain, 0.37, -3.0, 1.2
             )
         )
         np.testing.assert_allclose(actual_deltas, expected_deltas, rtol=1e-13, atol=1e-13)
         np.testing.assert_allclose(
             actual_orientations, expected_orientations, rtol=1e-13, atol=1e-13
         )
+
+    def test_vectorized_quantized_mouse_mapping_matches_segment_loop(self):
+        rng = np.random.default_rng(19)
+        hand_deltas = rng.normal(0, 0.00004, size=(24, 2))
+        cursor_gain = 2 * PnCGame("default").mouse_gain
+        expected_deltas = []
+        expected_orientations = []
+        orientation = -0.21
+        residual = np.array([0.31, -0.27])
+        hand_position = np.array([-0.03, 0.04])
+        for delta in hand_deltas:
+            cursor_delta, orientation, residual = (
+                Mouse.get_cursor_displacement_from_desk_rotation(
+                    hand_position,
+                    hand_position + delta,
+                    cursor_gain,
+                    orientation,
+                    -3.0,
+                    1.2,
+                    mouse_cpi=800,
+                    count_residual=residual,
+                    return_count_residual=True,
+                )
+            )
+            expected_deltas.append(cursor_delta)
+            expected_orientations.append(orientation)
+            hand_position += delta
+
+        actual_deltas, actual_orientations, actual_residual = (
+            Mouse.get_cursor_displacements_from_desk_rotation(
+                hand_deltas,
+                cursor_gain,
+                -0.21,
+                -3.0,
+                1.2,
+                mouse_cpi=800,
+                count_residual=np.array([0.31, -0.27]),
+                return_count_residual=True,
+            )
+        )
+
+        np.testing.assert_allclose(actual_deltas, expected_deltas, atol=1e-15)
+        np.testing.assert_allclose(
+            actual_orientations, expected_orientations, atol=1e-15
+        )
+        np.testing.assert_allclose(actual_residual, residual, atol=1e-13)
 
     def test_endpoint_correction_matches_reference_search(self):
         game = PnCGame(config_name="default")

@@ -80,8 +80,8 @@ normalize:
           min: -1
           max: 1
         max_cursor_speed:
-          min: -5.0
-          max: 5.0
+          min: -20.0
+          max: 20.0
         raw_path_length_m:
           min: -0.5
           max: 0.5
@@ -159,6 +159,85 @@ normalize:
     option:
       remove_reaction: True
 
+  # CPI inference through cursor-path shape. Curvature summaries are calculated
+  # from the simulator's full-resolution cursor replay before the auxiliary
+  # trajectory is resampled. No physical hand feature or CPI-derived distance is
+  # exposed to this configuration.
+  curvature:
+    stat:
+      list: [
+        movement_time,
+        target_hit,
+        click_distance,
+        target_rel_pos_x0,
+        target_rel_pos_y0,
+        click_rel_endpoint_x,
+        click_rel_endpoint_y,
+        target_radius,
+        target_distance,
+        traverse_length,
+        max_cursor_speed,
+        cursor_total_abs_turn_rad,
+        cursor_net_turn_rad,
+        cursor_mean_abs_turn_rad,
+        cursor_p90_abs_turn_rad,
+        cursor_turn_energy_rad2,
+        cursor_max_deviation_normalized,
+        cursor_path_excess_ratio,
+        cursor_early_mean_abs_turn_rad,
+        cursor_middle_mean_abs_turn_rad,
+        cursor_late_mean_abs_turn_rad,
+      ]
+      range:
+        movement_time: {min: -3, max: 3}
+        target_hit: {min: 0, max: 1}
+        click_distance: {min: -0.3, max: 0.3}
+        target_rel_pos_x0: {min: -1, max: 1}
+        target_rel_pos_y0: {min: -1, max: 1}
+        click_rel_endpoint_x: {min: -0.3, max: 0.3}
+        click_rel_endpoint_y: {min: -0.3, max: 0.3}
+        target_radius: {min: -0.1, max: 0.1}
+        target_distance: {min: -0.6, max: 0.6}
+        traverse_length: {min: 0, max: 1.5}
+        max_cursor_speed: {min: 0, max: 20}
+        cursor_total_abs_turn_rad: {min: 0, max: 12.5663706144}
+        cursor_net_turn_rad: {min: -6.2831853072, max: 6.2831853072}
+        cursor_mean_abs_turn_rad: {min: 0, max: 1.2}
+        cursor_p90_abs_turn_rad: {min: 0, max: 2.5}
+        cursor_turn_energy_rad2: {min: 0, max: 2.5}
+        cursor_max_deviation_normalized: {min: 0, max: 1}
+        cursor_path_excess_ratio: {min: 0, max: 3}
+        cursor_early_mean_abs_turn_rad: {min: 0, max: 1.5}
+        cursor_middle_mean_abs_turn_rad: {min: 0, max: 1.5}
+        cursor_late_mean_abs_turn_rad: {min: 0, max: 1.5}
+
+    stat_mean:
+      list: [
+        movement_time,
+        target_hit,
+      ]
+      ignore_statmean: true
+
+    traj:
+      list: [
+        timediff,
+        cursor_pos_x,
+        cursor_pos_y,
+        target_rel_pos_x,
+        target_rel_pos_y
+      ]
+      # The 20 Hz sequence is retained as an auxiliary observable signal. The
+      # curvature statistics above always use the full internal sampling rate.
+      ignore_traj: false
+      range:
+        timediff: {min: 0, max: 0.1}
+        cursor_pos_x: {min: -0.2656562237, max: 0.2656562237}
+        cursor_pos_y: {min: -0.1494316258, max: 0.1494316258}
+        target_rel_pos_x: {min: -0.5313124474, max: 0.5313124474}
+        target_rel_pos_y: {min: -0.2988632517, max: 0.2988632517}
+
+    option:
+      remove_reaction: True
 
 training:
   default:

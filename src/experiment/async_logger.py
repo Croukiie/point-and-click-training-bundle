@@ -9,9 +9,12 @@ from pathlib import Path
 import queue
 from typing import Any
 
+from ..utils.trajectory_features import CURVATURE_FEATURE_NAMES
+
 
 RAW_FIELDS = [
-    "session_id", "trial_id", "phase", "trial_stage", "block_index", "cpi", "input_backend", "event_index",
+    "session_id", "trial_id", "phase", "trial_stage", "block_index", "cpi",
+    "mousepad_condition", "input_backend", "event_index",
     "timestamp_ns", "time_from_onset_ns", "device_handle", "device_name",
     "os_cursor_x_px", "os_cursor_y_px", "browser_timestamp_ms", "raw_flags",
     "button_flags", "button_data", "dx_counts", "dy_counts", "dt_ns",
@@ -30,7 +33,8 @@ RAW_FIELDS = [
 ]
 
 FRAME_FIELDS = [
-    "session_id", "trial_id", "phase", "trial_stage", "block_index", "cpi", "input_backend", "frame_index",
+    "session_id", "trial_id", "phase", "trial_stage", "block_index", "cpi",
+    "mousepad_condition", "input_backend", "frame_index",
     "frame_start_ns", "present_return_ns", "time_from_onset_ns",
     "frame_interval_ns", "late_by_ns", "raw_events_consumed", "cursor_x_m",
     "cursor_y_m", "target_x_m", "target_y_m", "target_radius_m",
@@ -41,7 +45,7 @@ FRAME_FIELDS = [
 
 TRIAL_FIELDS = [
     "session_id", "trial_id", "template_id", "phase", "trial_stage", "block_index", "cpi",
-    "input_backend",
+    "mousepad_condition", "input_backend",
     "attempt", "valid", "invalid_reason", "outcome", "success", "timeout",
     "onset_ns", "first_movement_ns", "click_ns", "end_ns", "reaction_time_s",
     "movement_time_s", "total_time_s", "cursor_start_x_m", "cursor_start_y_m",
@@ -62,6 +66,7 @@ TRIAL_FIELDS = [
     "raw_max_speed_m_s", "raw_event_rate_hz",
     "mean_polling_interval_ns", "std_polling_interval_ns",
     "max_polling_gap_ns",
+    *CURVATURE_FEATURE_NAMES,
     "browser_onset_ms", "browser_first_movement_ms", "browser_click_ms",
     "browser_end_ms", "pointer_lock_raw_requested", "pointer_lock_raw_granted",
     "client_fullscreen", "client_width_px", "client_height_px", "device_pixel_ratio",
