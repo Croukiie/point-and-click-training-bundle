@@ -16,6 +16,8 @@ const els = {
   start: document.querySelector("#start-button"),
   setupError: document.querySelector("#setup-error"),
   displayCheck: document.querySelector("#display-check"),
+  protocolCpiValues: document.querySelector("#protocol-cpi-values"),
+  protocolTrialCount: document.querySelector("#protocol-trial-count"),
   canvas: document.querySelector("#task-canvas"),
   overlay: document.querySelector("#overlay"),
   overlayKicker: document.querySelector("#overlay-kicker"),
@@ -32,6 +34,9 @@ const ctx = els.canvas.getContext("2d", { alpha: false, desynchronized: true });
 const state = {
   ws: null,
   connected: false,
+  lastPongAt: 0,
+  heartbeatTimer: null,
+  startupTimer: null,
   session: null,
   experiment: null,
   display: null,
@@ -73,6 +78,16 @@ function connect() {
   state.ws = ws;
   ws.addEventListener("open", () => {
     state.connected = true;
+    state.lastPongAt = Date.now();
+    if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
+    state.heartbeatTimer = setInterval(() => {
+      if (state.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - state.lastPongAt > 5000) {
+        ws.close();
+        return;
+      }
+      ws.send(JSON.stringify({ type: "ping", client_ms: performance.now() }));
+    }, 2000);
     els.connection.classList.remove("waiting");
     els.connection.classList.add("connected");
     els.connection.lastElementChild.textContent = "Local recorder connected";
@@ -80,12 +95,21 @@ function connect() {
     els.start.disabled = false;
   });
   ws.addEventListener("close", () => {
+    if (state.heartbeatTimer) {
+      clearInterval(state.heartbeatTimer);
+      state.heartbeatTimer = null;
+    }
+    if (state.startupTimer) {
+      clearTimeout(state.startupTimer);
+      state.startupTimer = null;
+    }
     state.connected = false;
     els.start.disabled = true;
     if (state.session) showFatal("The local recorder disconnected. This session cannot continue.");
     else {
       els.connection.classList.remove("connected");
       els.connection.lastElementChild.textContent = "Local recorder disconnected";
+      els.setupError.textContent = "The recorder connection expired. Reload this page (Ctrl+F5) before starting.";
     }
   });
   ws.addEventListener("error", () => {
@@ -231,6 +255,8 @@ function participantPayload() {
     },
     hardware: {
       mouse_model: document.querySelector("#mouse-model").value.trim() || "not_reported",
+      declared_mouse_polling_hz: requiredPositiveInteger("#mouse-polling-hz", "Mouse polling rate"),
+      cpi_setting_method: document.querySelector("#cpi-setting-method").value,
       pointer_acceleration: document.querySelector("#pointer-acceleration").value,
       windows_pointer_speed: document.querySelector("#pointer-speed").value.trim() || "not_reported",
       declared_resolution_px: displayCalibration.resolution_px,
@@ -288,12 +314,19 @@ els.form.addEventListener("submit", async event => {
   if (!state.connected) return;
   try {
     const payload = participantPayload();
-    const fullscreenOk = await enterExperimentFullscreen();
-    if (!fullscreenOk) {
-      throw new Error("The browser refused fullscreen mode. Please click Start experiment again or allow fullscreen.");
-    }
     send(payload);
     els.start.disabled = true;
+    els.setupError.textContent = "Starting the local session...";
+    if (state.startupTimer) clearTimeout(state.startupTimer);
+    state.startupTimer = setTimeout(() => {
+      if (state.session) return;
+      state.startupTimer = null;
+      els.setupError.textContent = (
+        "The recorder did not confirm the session. Reload this page (Ctrl+F5), "
+        + "then submit the form again in a single experiment tab."
+      );
+      els.start.disabled = !state.connected;
+    }, 4000);
   } catch (error) {
     restoreSetupView();
     els.setupError.textContent = `Could not start the session: ${error.message}`;
@@ -302,7 +335,19 @@ els.form.addEventListener("submit", async event => {
 
 function handleServerMessage(message) {
   switch (message.type) {
+    case "protocol_config": {
+      const experiment = message.experiment || {};
+      const cpis = experiment.cpi_values || [];
+      const measured = Number(experiment.measured_trials_per_cpi || 0);
+      els.protocolCpiValues.textContent = cpis.join(", ");
+      els.protocolTrialCount.textContent = `${cpis.length * measured} total`;
+      break;
+    }
     case "session_ready":
+      if (state.startupTimer) {
+        clearTimeout(state.startupTimer);
+        state.startupTimer = null;
+      }
       state.session = message.session_id;
       state.experiment = message.experiment;
       state.display = message.display;
@@ -316,7 +361,10 @@ function handleServerMessage(message) {
       els.setup.classList.add("hidden");
       els.experiment.classList.remove("hidden");
       resizeCanvas();
-      showIntroduction();
+      showFullscreenGate();
+      break;
+    case "pong":
+      state.lastPongAt = Date.now();
       break;
     case "trial_ready":
       onTrialReady(message);
@@ -345,6 +393,10 @@ function handleServerMessage(message) {
 }
 
 function showServerError(message) {
+  if (state.startupTimer) {
+    clearTimeout(state.startupTimer);
+    state.startupTimer = null;
+  }
   if (!state.session) {
     els.setupError.textContent = message;
     els.start.disabled = !state.connected;
@@ -494,8 +546,14 @@ function showBlockStart() {
       "Do not change the Windows pointer speed or acceleration setting between blocks.",
       `${state.experiment.practice_trials_per_cpi} practice trials will come first.`,
     ],
-    button: `Start ${cpi} CPI practice`,
+    button: `I confirm ${cpi} CPI — start practice`,
     action: async () => {
+      send({
+        type: "cpi_confirmation",
+        cpi,
+        block_index: state.blockIndex + 1,
+        browser_ms: performance.now(),
+      });
       await acquirePointerLock();
       state.phase = "practice";
       state.phaseIndex = 0;
@@ -526,6 +584,28 @@ function clearScheduledTrial() {
     clearTimeout(state.nextTrialTimer);
     state.nextTrialTimer = null;
   }
+}
+
+function showFullscreenGate(previousFailure = false) {
+  showOverlay({
+    kicker: "Display setup",
+    title: "Enter fullscreen mode",
+    paragraphs: [
+      previousFailure
+        ? "Chrome refused fullscreen mode. Allow fullscreen for 127.0.0.1, then try again."
+        : "The session is ready. One final click opens the calibrated Full HD task window.",
+      "Do not begin the trials unless the experiment fills the entire screen.",
+    ],
+    button: "Enter fullscreen",
+    action: async () => {
+      const fullscreenOk = await enterExperimentFullscreen();
+      if (!fullscreenOk) {
+        showFullscreenGate(true);
+        return;
+      }
+      showIntroduction();
+    },
+  });
 }
 
 function requestPause() {

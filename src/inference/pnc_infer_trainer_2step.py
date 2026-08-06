@@ -6,6 +6,7 @@ Orignial code was written by Dr. Hee-seung Moon (https://github.com/hsmoon121/am
 """
 
 import os
+import sys
 from time import time
 from copy import deepcopy
 from pathlib import Path
@@ -52,6 +53,11 @@ class PnCConditionalAmortizerTrainer(ABC):
         train_config='default_cond',         # Training hyperparameter
         simul_config='default_cond',         # Simulator model setting
         data_config='default',    # Data processing setting
+        train_subparams_per_main=24,
+        train_trials_per_subparam=64,
+        validation_users=100,
+        validation_subparams=24,
+        validation_trials=100,
     ):
         if load_model is not None:
             name = load_model
@@ -63,11 +69,16 @@ class PnCConditionalAmortizerTrainer(ABC):
         self.iter = 0
         self.train_dataset = PnCConditionalAmortizerTrainingDataset(
             simulator_config=simul_config, 
-            normalize_config=data_config
+            normalize_config=data_config,
+            num_of_subparam_per_mainparam=train_subparams_per_main,
+            num_of_epsiode_per_param=train_trials_per_subparam,
         )
         self.valid_dataset = PnCConditionalAmortizerValidationDataset(
             simulator_config=simul_config, 
-            normalize_config=data_config
+            normalize_config=data_config,
+            total_user=validation_users,
+            total_cond_per_user=validation_subparams,
+            trial_per_user_cond=validation_trials,
         )
         self.simulator = deepcopy(self.train_dataset.simulator.simulator)
 
@@ -114,7 +125,14 @@ class PnCConditionalAmortizerTrainer(ABC):
         self.name = name if name is not None else f"{'PTE' if self.train_config.point_estimation else 'INN'}_{get_compact_timestamp_str()}"
 
         # User dataset
-        self.user_dataset = pd.read_csv(os.path.join(DIR_TO_DATA, "data/prolific_data/stat/merged_summary.csv"))
+        user_dataset_path = os.path.join(
+            DIR_TO_DATA, "data/prolific_data/stat/merged_summary.csv"
+        )
+        self.user_dataset = (
+            pd.read_csv(user_dataset_path)
+            if os.path.isfile(user_dataset_path)
+            else None
+        )
         self.n_user = 90
         self.n_cond = 24
         self.user_dataset_cond_key = "condition_id"
@@ -132,9 +150,34 @@ class PnCConditionalAmortizerTrainer(ABC):
 
         # Loss weight setting
         if self.point_estimation:
+            main_weights = np.asarray(
+                self.train_config.amortizer.loss_weight.main_param,
+                dtype=np.float32,
+            ).reshape(-1)
+            sub_weights = np.asarray(
+                self.train_config.amortizer.loss_weight.sub_param,
+                dtype=np.float32,
+            ).reshape(-1)
+            if main_weights.size == 1:
+                main_weights = np.repeat(main_weights, len(self.main_target_param))
+            if sub_weights.size == 1:
+                sub_weights = np.repeat(sub_weights, len(self.sub_target_param))
+            if main_weights.size != len(self.main_target_param):
+                raise ValueError(
+                    "Expected one main loss weight per shared parameter: "
+                    f"got {main_weights.size} for {self.main_target_param}"
+                )
+            if sub_weights.size != len(self.sub_target_param):
+                raise ValueError(
+                    "Expected one sub loss weight per block-specific parameter: "
+                    f"got {sub_weights.size} for {self.sub_target_param}"
+                )
             self.loss_weight_vector = np.concatenate((
-                np.array(self.train_config.amortizer.loss_weight.main_param),
-                np.tile(self.train_config.amortizer.loss_weight.sub_param, self.train_dataset.num_of_subparam_per_mainparam)
+                main_weights,
+                np.tile(
+                    sub_weights,
+                    self.train_dataset.num_of_subparam_per_mainparam,
+                ),
             ))
             self.loss_weight_vector = self.loss_weight_vector / self.loss_weight_vector.mean()
             self.loss_weight_vector = torch.from_numpy(self.loss_weight_vector).sqrt().to(self.amortizer.device)
@@ -201,7 +244,13 @@ class PnCConditionalAmortizerTrainer(ABC):
             losses[iter] = []
 
             # Training loop
-            with tqdm(total=step_per_iter, desc=f" Iter {iter}") as progress:
+            with tqdm(
+                total=step_per_iter,
+                desc=f" Iter {iter}/{n_iter}",
+                file=sys.stdout,
+                dynamic_ncols=True,
+                mininterval=1.0,
+            ) as progress:
                 for step in range(step_per_iter):
                     batch_param, batch_stat, batch_traj, _ = self.train_dataset.sample(
                         batch_sz=batch_sz,
@@ -310,12 +359,21 @@ class PnCConditionalAmortizerTrainer(ABC):
     
 
     def valid(self,
-        n_trial=np.array([16, 32, 64]),
+        n_trial=None,
         n_sample=300,   # Sample for distribution estimation
         verbose=True
     ):
         self.amortizer.eval()
         valid_res = dict()
+
+        if n_trial is None:
+            available = int(self.valid_dataset.trial_per_user_cond)
+            n_trial = np.array(
+                [value for value in (16, 32, 64) if value <= available]
+                or [available]
+            )
+        else:
+            n_trial = np.asarray(n_trial, dtype=int)
 
         ### 1) Parameter recovery from simulated
         type_list = ["mode", "mean", "median"] if \
@@ -354,7 +412,7 @@ class PnCConditionalAmortizerTrainer(ABC):
             ))).to_csv(f"{self.result_path}/iter{self.iter:03d}/recovery_r2_{infer_type}.csv", index=False)
 
             ### 2) Parameter inference from user data
-            if self.data_config.traj.ignore_traj:
+            if self.data_config.traj.ignore_traj and self.user_dataset is not None:
                 self.infer_user_parameter(n_sample, infer_type)
 
         if verbose:
@@ -402,8 +460,11 @@ class PnCConditionalAmortizerTrainer(ABC):
         inferred_main_params = np.array(inferred_main_params)   # (n_user, main_dim)
         inferred_sub_params = np.concatenate(inferred_sub_params) # (n_user * n_subparam, sub_dim)
                 
-        gt_main_params, gt_sub_params = self.convert_param_z_to_w(main_outputs=gt_main_params,
-                                                                  sub_outputs=rearrange(gt_sub_params, 'n s d -> (n s) d'))
+        n_subparams = gt_sub_params.shape[1]
+        gt_main_params, gt_sub_params = self.convert_param_z_to_w(
+            main_outputs=gt_main_params,
+            sub_outputs=rearrange(gt_sub_params, 'n s d -> (n s) d'),
+        )
         
         pickle_save(
             f"{basedir}/trial{n_datasize:03d}.pkl",
@@ -414,6 +475,7 @@ class PnCConditionalAmortizerTrainer(ABC):
         rsq_list = list()
         
         fig, axs = figure_grid(1, len(self.main_target_param), size_ax=3)
+        axs = np.atleast_1d(axs)
         for i, p in enumerate(self.main_target_param):
             result = draw_r2_plot(
                 ax=axs[i],
@@ -428,6 +490,7 @@ class PnCConditionalAmortizerTrainer(ABC):
         figure_save(fig, f"{basedir}/trial{n_datasize:03d}_main.png")
 
         fig, axs = figure_grid(1, len(self.sub_target_param), size_ax=3)
+        axs = np.atleast_1d(axs)
         for i, p in enumerate(self.sub_target_param):
             result = draw_r2_plot(
                 ax=axs[i],
@@ -440,6 +503,54 @@ class PnCConditionalAmortizerTrainer(ABC):
             rsq_list.append(result["R2"])
         fig.suptitle(f"Num. of trials: {n_datasize}", fontsize=12)
         figure_save(fig, f"{basedir}/trial{n_datasize:03d}_sub.png")
+
+        if self.sub_target_param == ["cpi"]:
+            true_cpi = gt_sub_params[:, 0].reshape(n_user, n_subparams)
+            inferred_cpi = inferred_sub_params[:, 0].reshape(n_user, n_subparams)
+            exact_order = np.all(
+                np.argsort(true_cpi, axis=1) == np.argsort(inferred_cpi, axis=1),
+                axis=1,
+            )
+            pair_matches = []
+            rank_correlations = []
+            for true_values, inferred_values in zip(true_cpi, inferred_cpi):
+                matches = []
+                for left in range(n_subparams):
+                    for right in range(left + 1, n_subparams):
+                        matches.append(
+                            np.sign(true_values[left] - true_values[right])
+                            == np.sign(inferred_values[left] - inferred_values[right])
+                        )
+                pair_matches.append(float(np.mean(matches)))
+                true_rank = np.argsort(np.argsort(true_values))
+                inferred_rank = np.argsort(np.argsort(inferred_values))
+                rank_correlations.append(
+                    float(np.corrcoef(true_rank, inferred_rank)[0, 1])
+                )
+
+            ordering = pd.DataFrame({
+                "simulated_participant": np.repeat(np.arange(n_user), n_subparams),
+                "anonymous_block": np.tile(np.arange(n_subparams), n_user),
+                "true_cpi": true_cpi.reshape(-1),
+                "inferred_cpi": inferred_cpi.reshape(-1),
+                "participant_exact_order": np.repeat(exact_order, n_subparams),
+                "participant_pairwise_order_accuracy": np.repeat(
+                    pair_matches, n_subparams
+                ),
+                "participant_spearman_order": np.repeat(
+                    rank_correlations, n_subparams
+                ),
+            })
+            ordering.to_csv(
+                f"{basedir}/trial{n_datasize:03d}_cpi_ordering.csv",
+                index=False,
+            )
+            result_log[
+                f"Parameter_Recovery/{infer_type}/cpi_exact_order_{n_datasize:03d}_{surfix}"
+            ] = float(np.mean(exact_order))
+            result_log[
+                f"Parameter_Recovery/{infer_type}/cpi_pairwise_order_{n_datasize:03d}_{surfix}"
+            ] = float(np.mean(pair_matches))
 
         return rsq_list
     

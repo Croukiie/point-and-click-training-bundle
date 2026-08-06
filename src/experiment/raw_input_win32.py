@@ -1,4 +1,9 @@
-"""Windows Raw Input capture at the mouse's native polling rate."""
+"""Capture Windows Raw Input mouse messages without pointer acceleration.
+
+WM_INPUT delivery intervals are application/OS timestamps.  They must not be
+interpreted as a direct measurement of the mouse's USB polling rate because
+the driver, Windows message delivery, and the Python callback can batch data.
+"""
 
 from __future__ import annotations
 

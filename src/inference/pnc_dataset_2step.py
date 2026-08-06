@@ -6,6 +6,7 @@ Code modified by June-Seop Yoon
 """
 
 import os
+import sys
 from pathlib import Path
 from joblib import Parallel, delayed
 import psutil
@@ -210,7 +211,9 @@ class PnCConditionalAmortizerTrainingDataset(PnCAmortizerTrainingDataset):
             self._get_dataset(verbose, remove_reaction=self.norm_config.option.remove_reaction)
     
     
-    def _get_dataset(self, verbose=False, do_not_load_traj=True, **kwargs):
+    def _get_dataset(self, verbose=False, do_not_load_traj=None, **kwargs):
+        if do_not_load_traj is None:
+            do_not_load_traj = bool(self.norm_config.traj.ignore_traj)
         datafilelist = glob.glob(f"{self.data_path}/tr_*mp_{self.num_of_subparam_per_mainparam}sp_{self.num_of_epsiode_per_param}ep_*.npz")
 
         if not len(datafilelist):
@@ -223,7 +226,13 @@ class PnCConditionalAmortizerTrainingDataset(PnCAmortizerTrainingDataset):
 
         datafilelist.sort()
         incompatible_data = 0
-        for f in datafilelist if not verbose else tqdm(datafilelist, desc="Processing training data simulations ... "):
+        for f in datafilelist if not verbose else tqdm(
+            datafilelist,
+            desc="Loading shared-CPI training data",
+            file=sys.stdout,
+            dynamic_ncols=True,
+            mininterval=1.0,
+        ):
             data_feat_order = load_config(f.replace('.npz', '.yaml'))
             if set(data_feat_order.fixed_cond) != set(self.simulator.fixed_condition_per_param):
                 incompatible_data += 1
@@ -322,7 +331,14 @@ class PnCConditionalAmortizerTrainingDataset(PnCAmortizerTrainingDataset):
             filepath = f"{self.data_path}/{filename}"
             
             eps = Parallel(n_jobs=num_cpu)(
-                delayed(get_simul_res)(self.simulator, i) for i in tqdm(range(n_main_param))
+                delayed(get_simul_res)(self.simulator, i)
+                for i in tqdm(
+                    range(n_main_param),
+                    desc="Simulating shared participants",
+                    file=sys.stdout,
+                    dynamic_ncols=True,
+                    mininterval=1.0,
+                )
             )
 
             # Save column
@@ -562,7 +578,14 @@ class PnCConditionalAmortizerValidationDataset(PnCAmortizerValidationDataset):
             return result   # Normalized parameter, summary (nested list of pd.DataFrame), trajectory (nested list of pd.DataFrame)
 
         eps = Parallel(n_jobs=num_cpu)(
-            delayed(get_simul_res)(self.simulator, i) for i in tqdm(range(self.total_user))
+            delayed(get_simul_res)(self.simulator, i)
+            for i in tqdm(
+                range(self.total_user),
+                desc="Simulating validation participants",
+                file=sys.stdout,
+                dynamic_ncols=True,
+                mininterval=1.0,
+            )
         )
 
         filepath = os.path.join(

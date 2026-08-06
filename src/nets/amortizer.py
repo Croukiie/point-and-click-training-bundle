@@ -605,9 +605,22 @@ class ConditionalRegressionForTrialData(AmortizerFrame):
         if not self.encoder_net.series_data:
             contexts = self.encoder_net(full_stat_data)
             contexts = rearrange(contexts, "(a b c) d -> a (b c) d", a=batch_stat.shape[0], b=batch_stat.shape[1])
-            
+        elif self.encoder_net.traj_encoder_type == "transformer":
+            if batch_traj is None:
+                raise ValueError("Trajectory data are required by this conditional amortizer")
+            full_traj_data = list(rearrange(batch_traj, "a b c -> (a b c)"))
+            padded_traj, mask = mask_and_pad_traj_data(full_traj_data)
+            contexts = self.encoder_net(full_stat_data, padded_traj, mask=mask)
+            contexts = rearrange(
+                contexts,
+                "(a b c) d -> a (b c) d",
+                a=batch_stat.shape[0],
+                b=batch_stat.shape[1],
+            )
         else:
-            raise NotImplementedError(f"{self.__name__}.forward not implemented for trajectory encoding")
+            raise NotImplementedError(
+                "Conditional regression currently supports transformer trajectories only"
+            )
 
         cond_main = self.trial_encoder_net(contexts)
         main_param = self.linear_net_main(cond_main)
@@ -633,8 +646,15 @@ class ConditionalRegressionForTrialData(AmortizerFrame):
 
         if not self.encoder_net.series_data:
             contexts = self.encoder_net(stat_data)
+        elif self.encoder_net.traj_encoder_type == "transformer":
+            if traj_data is None:
+                raise ValueError("Trajectory data are required by this conditional amortizer")
+            padded_traj, mask = mask_and_pad_traj_data(traj_data)
+            contexts = self.encoder_net(stat_data, padded_traj, mask=mask)
         else:
-            raise NotImplementedError(f"{self.__name__}.infer not implemented for trajectory encoding")
+            raise NotImplementedError(
+                "Conditional regression currently supports transformer trajectories only"
+            )
     
         # Main parameter inference
         cond_main = self.trial_encoder_net(contexts)

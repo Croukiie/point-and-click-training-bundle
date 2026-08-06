@@ -61,11 +61,12 @@ Examples:
 |---:|---:|
 | 400 | 0.0635 mm |
 | 800 | 0.03175 mm |
+| 1200 | 0.021167 mm |
 | 1600 | 0.015875 mm |
 
 In the RL environment, CPI is treated as a user/model parameter sampled from
 400 to 1600 in increments of 10. The primary human experiment conditions are
-400, 800, and 1600 CPI.
+400, 800, 1200, and 1600 CPI.
 
 ### 3.2 24-inch Full HD calibration
 
@@ -677,8 +678,12 @@ label is shifted by one iteration.
 
 - `src/experiment/async_logger.py`
 - `src/experiment/config.yaml`
+- `src/experiment/export_human_amortizer_data.py`
 - `src/experiment/point_and_click_experiment.py`
+- `src/experiment/quality_check_human_data.py`
 - `src/experiment/web_experiment_server.py`
+- `src/experiment/web/app.js`
+- `src/experiment/web/index.html`
 
 ### Dataset and amortizer analysis
 
@@ -695,14 +700,36 @@ label is shifted by one iteration.
 ### Tests
 
 - `tests/test_cpi_and_display.py`
+- `tests/test_human_data_export.py`
 - `tests/test_vectorized_math.py`
 - `tests/test_trajectory_curvature.py`
 
 ### Documentation
 
+- `HUMAN_EXPERIMENT_GUIDE.md`
 - `RL_TRAINING_GUIDE.md`
 
-## 20. Final summary
+## 20. Human-to-amortizer collection update
+
+The collection protocol was extended before launching the human experiment:
+
+- the CPI grid is now 400, 800, 1200, and 1600 CPI;
+- the order is counterbalanced per participant;
+- every block requires an explicit confirmation that the physical mouse was
+  set to the requested CPI;
+- the mouse model, declared polling rate, CPI-setting method, mousepad,
+  Windows pointer speed, and acceleration state are stored;
+- the setup page calculates the total recorded-trial count from the active
+  protocol instead of displaying a hard-coded value;
+- quality control reports missing CPI confirmations and missing hardware
+  metadata;
+- a dedicated exporter converts valid measured trials to the exact 21-feature
+  curvature schema and creates movement-only 20-Hz trajectory tables.
+
+The source Raw Input files remain unchanged. CPI is retained in the export only
+as evaluation ground truth and is never included among the amortizer inputs.
+
+## 21. Final summary
 
 The original bundle modeled CPI primarily as a continuous gain effect. The
 modified bundle now models a physical mouse sensor more faithfully through

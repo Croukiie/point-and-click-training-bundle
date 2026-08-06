@@ -72,6 +72,7 @@ class PnCConditionalInferer:
     def infer(self, stat, traj=None, grouping_index=None, n_sample=300, type='mean', return_df=False, return_samples=False):
         assert grouping_index is not None
 
+        grouping_index = np.asarray(grouping_index, dtype=np.int64).copy()
         gi_torch = torch.from_numpy(grouping_index).to(self.amortizer.device)
 
         if return_samples:
@@ -97,10 +98,22 @@ class PnCConditionalInferer:
 
         gi = np.sort(np.unique(grouping_index))
         main_w = {p: float(param_w_list[0][p]) for p in self.simulator.main_param_list}
-        sub_w = {int(i): {p: float(param_w_list[int(i)][p]) for p in self.simulator.sub_param_list} for i in gi}
+        param_z_by_group = {
+            group: param_z_list[position] for position, group in enumerate(gi)
+        }
+        param_w_by_group = {
+            group: param_w_list[position] for position, group in enumerate(gi)
+        }
+        sub_w = {
+            int(group): {
+                p: float(param_w_by_group[group][p])
+                for p in self.simulator.sub_param_list
+            }
+            for group in gi
+        }
 
-        param_z_list = [param_z_list[g] for g in grouping_index]
-        param_w_list = [param_w_list[g] for g in grouping_index]
+        param_z_list = [param_z_by_group[g] for g in grouping_index]
+        param_w_list = [param_w_by_group[g] for g in grouping_index]
 
         if return_df:
             param_z_list, param_w_list = pd.DataFrame(param_z_list), pd.DataFrame(param_w_list)
@@ -175,7 +188,7 @@ class PnCConditionalInferer:
             traj_norm = np.array(traj_norm, dtype=object)
             return stat_norm, traj_norm, stat[grouping_index_column].to_numpy()
         
-        return stat_norm, stat[grouping_index_column].to_numpy()
+        return stat_norm, None, stat[grouping_index_column].to_numpy()
 
 
 

@@ -45,6 +45,8 @@ FRAME_FIELDS = [
 
 TRIAL_FIELDS = [
     "session_id", "trial_id", "template_id", "phase", "trial_stage", "block_index", "cpi",
+    "cpi_confirmed", "cpi_confirmation_timestamp_ns", "cpi_setting_method",
+    "declared_mouse_polling_hz",
     "mousepad_condition", "input_backend",
     "attempt", "valid", "invalid_reason", "outcome", "success", "timeout",
     "onset_ns", "first_movement_ns", "click_ns", "end_ns", "reaction_time_s",

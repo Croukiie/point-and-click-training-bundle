@@ -74,8 +74,20 @@
               </select>
             </label>
             <label>
-              Mouse model
-              <input id="mouse-model" autocomplete="off" placeholder="Model name">
+              Mouse model <span aria-hidden="true">*</span>
+              <input id="mouse-model" required autocomplete="off" placeholder="Model name">
+            </label>
+            <label>
+              Mouse polling rate (Hz) <span aria-hidden="true">*</span>
+              <input id="mouse-polling-hz" type="number" required min="125" max="8000" step="1" value="1000">
+            </label>
+            <label>
+              CPI setting method <span aria-hidden="true">*</span>
+              <select id="cpi-setting-method" required>
+                <option value="mouse_software">Mouse software/profile</option>
+                <option value="hardware_button">Physical CPI button</option>
+                <option value="other_verified">Other verified method</option>
+              </select>
             </label>
             <label>
               Gaming hours per week
@@ -90,8 +102,8 @@
               </select>
             </label>
             <label>
-              Windows pointer speed
-              <input id="pointer-speed" autocomplete="off" placeholder="For example: 6/11">
+              Windows pointer speed <span aria-hidden="true">*</span>
+              <input id="pointer-speed" required autocomplete="off" value="6/11" placeholder="For example: 6/11">
             </label>
           </div>
 
@@ -141,7 +153,8 @@
           <div class="preflight">
             <div><span>Fixed display</span><strong>24 inch Full HD</strong></div>
             <div><span>Virtual task space</span><strong>0.5313 x 0.2989 m</strong></div>
-            <div><span>Recorded trials</span><strong>384 total</strong></div>
+            <div><span>CPI conditions</span><strong id="protocol-cpi-values">400, 800, 1200, 1600</strong></div>
+            <div><span>Recorded trials</span><strong id="protocol-trial-count">512 total</strong></div>
           </div>
 
           <button id="start-button" class="primary" type="submit" disabled>
@@ -171,6 +184,6 @@
     <div id="fatal" class="fatal hidden"></div>
   </section>
 
-  <script src="/static/app.js?v=20260713-small-blue-crosshair-v2" defer></script>
+  <script src="/static/app.js?v=20260805-connection-watchdog" defer></script>
 </body>
 </html>

@@ -31,6 +31,7 @@ def make_trial_templates(
     id_range: tuple[float, float],
     seed: int,
     cursor_position_m: tuple[float, float] | None = None,
+    target_radius_range_m: tuple[float, float] | None = None,
 ) -> list[TrialTemplate]:
     """Reproduce the fixed-target sampling rule used by ``PnCGame.reset``.
 
@@ -39,6 +40,7 @@ def make_trial_templates(
     rng = np.random.default_rng(seed)
     half_window = np.asarray(virtual_size_m, dtype=np.float64) / 2.0
     templates: list[TrialTemplate] = []
+    radius_range = _validate_radius_range(target_radius_range_m)
 
     for template_id in range(count):
         cursor = (
@@ -54,7 +56,10 @@ def make_trial_templates(
             fits = np.all(target >= -half_window + radius) and np.all(
                 target <= half_window - radius
             )
-            if fits and distance >= radius:
+            radius_allowed = radius_range is None or (
+                radius_range[0] <= radius <= radius_range[1]
+            )
+            if fits and distance >= radius and radius_allowed:
                 break
 
         templates.append(
@@ -73,7 +78,7 @@ def make_trial_templates(
 
 
 def counterbalanced_cpi_order(participant_id: str, cpi_values: list[int], seed: int) -> list[int]:
-    """Choose one of the six 3-condition orders deterministically per participant."""
+    """Choose a condition permutation deterministically for each participant."""
     orders = list(permutations(cpi_values))
     digest = hashlib.sha256(f"{seed}:{participant_id}".encode("utf-8")).digest()
     return list(orders[int.from_bytes(digest[:8], "little") % len(orders)])
@@ -94,6 +99,17 @@ def virtual_to_pixel(
 
 def fitts_id(distance_m: float, radius_m: float) -> float:
     return math.log2(distance_m / (2.0 * radius_m) + 1.0)
+
+
+def _validate_radius_range(
+    radius_range_m: tuple[float, float] | None,
+) -> tuple[float, float] | None:
+    if radius_range_m is None:
+        return None
+    minimum, maximum = (float(value) for value in radius_range_m)
+    if not (0.0 < minimum <= maximum):
+        raise ValueError("Target radius range must satisfy 0 < min <= max")
+    return minimum, maximum
 
 
 def angle_from_delta(delta: np.ndarray) -> float | None:
@@ -117,6 +133,7 @@ def make_trial_stage_template(
     cursor_position_m: np.ndarray,
     virtual_size_m: tuple[float, float],
     start_target_radius_m: float = 0.006,
+    target_radius_range_m: tuple[float, float] | None = None,
 ) -> TrialTemplate:
     """Build the start or task stage consistently for native and web clients."""
     cursor = np.asarray(cursor_position_m, dtype=np.float64)
@@ -134,6 +151,9 @@ def make_trial_stage_template(
             if distance <= 0
             else distance / (2.0**float(base_template.fitts_id) - 1.0) / 2.0
         )
+        radius_range = _validate_radius_range(target_radius_range_m)
+        if radius_range is not None:
+            radius = float(np.clip(radius, *radius_range))
         half_window = np.asarray(virtual_size_m, dtype=np.float64) / 2.0
         max_radius = float(
             np.min(np.minimum(target + half_window, half_window - target))

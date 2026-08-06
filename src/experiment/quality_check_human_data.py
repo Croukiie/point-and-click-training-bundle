@@ -171,6 +171,12 @@ class SessionSummary:
     focus_lost_count: int
     fullscreen_false_count: int
     cpi_values: str
+    confirmed_cpi_blocks: int
+    expected_cpi_blocks: int
+    declared_mouse_polling_hz: Any
+    cpi_setting_method: str
+    pointer_acceleration: str
+    windows_pointer_speed: str
     display_resolution: str
     display_size_cm: str
     browser_estimated_resolution: str
@@ -309,7 +315,8 @@ def _group_trial_rows(
 
 def _summarize_session(session_dir: Path, session: dict[str, Any], rows: list[dict[str, str]]) -> SessionSummary:
     participant = session.get("participant") or {}
-    display = session.get("display_calibration") or (session.get("hardware") or {}).get("display_calibration") or {}
+    hardware = session.get("hardware") or {}
+    display = session.get("display_calibration") or hardware.get("display_calibration") or {}
     event_counts = _event_counts(session_dir)
     measured = [row for row in rows if row.get("phase") == "measured"]
     measured_success = sum(row.get("outcome") == "success" for row in measured)
@@ -319,6 +326,8 @@ def _summarize_session(session_dir: Path, session: dict[str, Any], rows: list[di
     focus_lost = sum(_bool(row.get("focus_lost")) is True for row in rows)
     fullscreen_false = sum(_bool(row.get("client_fullscreen")) is False for row in rows)
     cpis = sorted({row.get("cpi", "") for row in rows}, key=lambda x: int(x) if str(x).isdigit() else x)
+    task = session.get("task") or {}
+    expected_order = task.get("cpi_order") or task.get("config", {}).get("experiment", {}).get("cpi_values") or cpis
 
     return SessionSummary(
         session_id=session_dir.name,
@@ -336,11 +345,24 @@ def _summarize_session(session_dir: Path, session: dict[str, Any], rows: list[di
         focus_lost_count=focus_lost,
         fullscreen_false_count=fullscreen_false,
         cpi_values=";".join(cpis),
+        confirmed_cpi_blocks=event_counts.get("cpi_confirmed", 0),
+        expected_cpi_blocks=len(expected_order),
+        declared_mouse_polling_hz=hardware.get("declared_mouse_polling_hz", ""),
+        cpi_setting_method=str(hardware.get("cpi_setting_method", "")),
+        pointer_acceleration=str(
+            hardware.get("pointer_acceleration", hardware.get("declared_pointer_acceleration", ""))
+        ),
+        windows_pointer_speed=str(
+            hardware.get("windows_pointer_speed", hardware.get("declared_os_pointer_speed", ""))
+        ),
         display_resolution="x".join(str(v) for v in display.get("resolution_px", [])),
         display_size_cm="x".join(str(v) for v in display.get("physical_size_cm", [])),
         browser_estimated_resolution="x".join(str(v) for v in display.get("browser_estimated_resolution_px", [])),
         fixed_profile_warning=str(display.get("fixed_profile_warning", "")),
-        session_complete=event_counts.get("session_complete", 0) > 0,
+        session_complete=(
+            event_counts.get("session_complete", 0) > 0
+            or event_counts.get("session_end", 0) > 0
+        ),
     )
 
 
@@ -506,6 +528,7 @@ def _write_report(
                 "Measured success",
                 "Invalid",
                 "Complete",
+                "CPI confirmations",
                 "Display warning",
             ],
             [
@@ -517,6 +540,7 @@ def _write_report(
                     "" if s.measured_success_rate is None else f"{s.measured_success_rate:.1%}",
                     s.invalid,
                     "yes" if s.session_complete else "no",
+                    f"{s.confirmed_cpi_blocks}/{s.expected_cpi_blocks}",
                     s.fixed_profile_warning or "",
                 ]
                 for s in session_summaries
@@ -591,6 +615,16 @@ def _write_report(
             warnings.append(f"- {s.participant_id}: {s.measured_timeout} measured timeouts.")
         if s.fixed_profile_warning:
             warnings.append(f"- {s.participant_id}: display warning: {s.fixed_profile_warning}")
+        if s.confirmed_cpi_blocks < s.expected_cpi_blocks:
+            warnings.append(
+                f"- {s.participant_id}: only {s.confirmed_cpi_blocks}/{s.expected_cpi_blocks} CPI blocks were confirmed."
+            )
+        if s.pointer_acceleration and s.pointer_acceleration != "off":
+            warnings.append(
+                f"- {s.participant_id}: Windows pointer acceleration was declared as {s.pointer_acceleration}."
+            )
+        if not s.declared_mouse_polling_hz:
+            warnings.append(f"- {s.participant_id}: declared mouse polling rate is missing.")
 
     if warnings:
         lines.extend(warnings)
