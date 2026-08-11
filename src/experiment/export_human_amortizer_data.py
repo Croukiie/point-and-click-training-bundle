@@ -20,7 +20,10 @@ from typing import Any
 
 import numpy as np
 
-from ..utils.trajectory_features import CURVATURE_FEATURE_NAMES
+from ..utils.trajectory_features import (
+    CURVATURE_FEATURE_NAMES,
+    cursor_curvature_features,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -153,8 +156,6 @@ def _trial_selection_reason(
     )
     if any(_float(row.get(name)) is None for name in required):
         return "missing_trial_summary_value"
-    if any(_float(row.get(name)) is None for name in CURVATURE_FEATURE_NAMES):
-        return "missing_curvature_feature"
     return None
 
 
@@ -168,14 +169,10 @@ def _resample_movement(
         return None
 
     points: list[tuple[float, float, float, float]] = []
-    max_cursor_speed = 0.0
     for row in raw_rows:
         onset_ns = _float(row.get("time_from_onset_ns"))
         x = _float(row.get("cursor_x_m"))
         y = _float(row.get("cursor_y_m"))
-        speed = _float(row.get("speed_m_s"))
-        if speed is not None:
-            max_cursor_speed = max(max_cursor_speed, speed)
         if onset_ns is None or x is None or y is None:
             continue
         onset_s = onset_ns / 1e9
@@ -208,6 +205,15 @@ def _resample_movement(
     target_x = float(trial["target_x_m"])
     target_y = float(trial["target_y_m"])
 
+    sample_dt = np.diff(new_t)
+    sample_distance = np.hypot(np.diff(new_x), np.diff(new_y))
+    valid_dt = sample_dt > 0
+    max_cursor_speed = (
+        float(np.max(sample_distance[valid_dt] / sample_dt[valid_dt]))
+        if np.any(valid_dt)
+        else 0.0
+    )
+
     trajectory = []
     previous_t = 0.0
     for index, (timestamp, x, y) in enumerate(zip(new_t, new_x, new_y)):
@@ -232,6 +238,7 @@ def _amortizer_row(
     participant_id: str,
     hardware: dict[str, Any],
     max_cursor_speed: float,
+    trajectory: list[dict[str, float]],
 ) -> dict[str, Any]:
     trial_id = str(trial["trial_id"])
     target_x = float(trial["target_x_m"])
@@ -241,6 +248,17 @@ def _amortizer_row(
     click_x = float(trial["click_x_m"])
     click_y = float(trial["click_y_m"])
     cpi_confirmed = _bool(trial.get("cpi_confirmed")) is True
+    cursor_positions = np.asarray(
+        [[sample["cursor_pos_x"], sample["cursor_pos_y"]] for sample in trajectory],
+        dtype=np.float64,
+    )
+    traverse_length = float(
+        np.sum(np.linalg.norm(np.diff(cursor_positions, axis=0), axis=1))
+    )
+    curvature_features = cursor_curvature_features(
+        cursor_positions,
+        target_position=[target_x, target_y],
+    )
     row: dict[str, Any] = {
         "trial_uid": f"{session_id}:{trial_id}",
         "session_id": session_id,
@@ -268,10 +286,10 @@ def _amortizer_row(
         "click_rel_endpoint_y": target_y - click_y,
         "target_radius": float(trial["target_radius_m"]),
         "target_distance": math.hypot(target_x - start_x, target_y - start_y),
-        "traverse_length": float(trial["path_length_m"]),
+        "traverse_length": traverse_length,
         "max_cursor_speed": max_cursor_speed,
     }
-    row.update({name: float(trial[name]) for name in CURVATURE_FEATURE_NAMES})
+    row.update(curvature_features)
     return row
 
 
@@ -391,6 +409,7 @@ def export_sessions(
                     participant_id=participant_id,
                     hardware=hardware,
                     max_cursor_speed=max_cursor_speed,
+                    trajectory=trajectory,
                 )
                 stats_writer.writerow(stat)
                 for sample in trajectory:
@@ -416,6 +435,8 @@ def export_sessions(
         "exported_trial_count": exported_trials,
         "exported_trajectory_sample_count": exported_samples,
         "trajectory_hz": trajectory_hz,
+        "motion_summary_hz": trajectory_hz,
+        "curvature_source": "resampled_cursor_trajectory",
         "trajectory_reaction_period_removed": True,
         "filters": {
             "include_practice": include_practice,

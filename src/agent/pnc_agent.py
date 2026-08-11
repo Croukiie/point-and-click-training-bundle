@@ -737,7 +737,19 @@ class PnCEnvDefault(gym.Env):
         
     #     return 0
 
+class PnCEnvCpiHidden(PnCEnvDefault):
+    """Apply physical CPI but hide its exact value from the RL policy."""
 
+    def np_cstate(self):
+        observation = super().np_cstate()
+
+        parameter_names = list(self.user.param_modul.list)
+        if "cpi" in parameter_names:
+            cpi_index = parameter_names.index("cpi")
+            observation[cpi_index] = 0.0
+
+        return observation
+    
 
 class PnCClassicClick(PnCEnvDefault):
     # def _unpack_action(self, action_norm):

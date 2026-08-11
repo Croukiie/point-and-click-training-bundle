@@ -31,6 +31,7 @@ PNC_TYPE="${PNC_TYPE:-default}"
 RL_SETTING="${RL_SETTING:-default}"
 STEPS="${STEPS:-30000000}"
 DEVICE="${DEVICE:-cuda}"
+ENV_CLASS_TYPE="${ENV_CLASS_TYPE:-PnCEnvDefault}"
 
 "$PYTHON_BIN" - <<'PY'
 import torch
@@ -45,7 +46,7 @@ PY
 command=(
   "$PYTHON_BIN" -m src.rl.sac_trainer
   --num_cpu "$NUM_CPU"
-  --env_class_type PnCEnvDefault
+  --env_class_type "$ENV_CLASS_TYPE"
   --agent_type "$AGENT_TYPE"
   --pnc_type "$PNC_TYPE"
   --rl_setting "$RL_SETTING"
