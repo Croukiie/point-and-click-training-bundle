@@ -16,39 +16,9 @@ from src.utils.mouse_sensitivity import (
 )
 from src.utils.mymath import linear_denormalize, linear_normalize
 from src.utils.myutils import mask_and_pad_traj_data
-from src.experiment.task_design import make_trial_stage_template, make_trial_templates
 
 
 class CpiAndDisplayTests(unittest.TestCase):
-    def test_experiment_targets_stay_in_simulation_radius_range(self):
-        radius_range = (
-            ENV.default.range.target.radius.min,
-            ENV.default.range.target.radius.max,
-        )
-        templates = make_trial_templates(
-            1000,
-            (0.5313124474, 0.2988632517),
-            (2.5, 7.2),
-            20260708,
-            target_radius_range_m=radius_range,
-        )
-
-        self.assertTrue(
-            all(radius_range[0] <= item.target_radius_m <= radius_range[1]
-                for item in templates)
-        )
-
-        base = templates[0]
-        staged = make_trial_stage_template(
-            base,
-            "task",
-            np.array([base.target_x_m + 1e-5, base.target_y_m]),
-            (0.5313124474, 0.2988632517),
-            target_radius_range_m=radius_range,
-        )
-        self.assertGreaterEqual(staged.target_radius_m, radius_range[0])
-        self.assertLessEqual(staged.target_radius_m, radius_range[1])
-
     def test_24_inch_16_by_9_geometry(self):
         width = ENV.default.range.window_width.max
         height = width * ENV.window_ratio_height / ENV.window_ratio_width

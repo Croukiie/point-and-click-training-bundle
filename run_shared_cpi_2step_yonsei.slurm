@@ -28,17 +28,20 @@ export PYTHONUNBUFFERED=1
 RL_MODEL="${RL_MODEL:-pnc_rl_24fhd_cpi_26210DBCT}"
 RL_CHECKPOINT="${RL_CHECKPOINT:-best}"
 VARIANT="${VARIANT:-trajectory}"
+FEATURE_PROFILE="${FEATURE_PROFILE:-full}"
 DATA_CPU="${DATA_CPU:-${SLURM_CPUS_PER_TASK:-64}}"
 TRAIN_MAIN_PARAMS="${TRAIN_MAIN_PARAMS:-43690}"
 TRIALS_PER_BLOCK="${TRIALS_PER_BLOCK:-64}"
 VALIDATION_USERS="${VALIDATION_USERS:-100}"
 VALIDATION_TRIALS="${VALIDATION_TRIALS:-256}"
+TRAJECTORY_HZ="${TRAJECTORY_HZ:-20}"
 AMORTIZER_ITERATIONS="${AMORTIZER_ITERATIONS:-200}"
 STEPS_PER_ITERATION="${STEPS_PER_ITERATION:-2048}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 SAVE_FREQUENCY="${SAVE_FREQUENCY:-10}"
 AMORTIZER_NAME="${AMORTIZER_NAME:-PTE_SHARED_CPI_2STEP_24FHD}"
 SKIP_DATA="${SKIP_DATA:-0}"
+SKIP_AMORTIZER="${SKIP_AMORTIZER:-0}"
 
 checkpoint_path="data/pnc_model/$RL_MODEL/$RL_CHECKPOINT/${RL_CHECKPOINT}_model.zip"
 if [[ ! -f "$checkpoint_path" ]]; then
@@ -61,12 +64,14 @@ args=(
   --rl-model "$RL_MODEL"
   --rl-checkpoint "$RL_CHECKPOINT"
   --variant "$VARIANT"
+  --feature-profile "$FEATURE_PROFILE"
   --data-cpu "$DATA_CPU"
   --train-main-params "$TRAIN_MAIN_PARAMS"
   --blocks-per-participant 3
   --trials-per-block "$TRIALS_PER_BLOCK"
   --validation-users "$VALIDATION_USERS"
   --validation-trials "$VALIDATION_TRIALS"
+  --trajectory-downsample "$TRAJECTORY_HZ"
   --amortizer-name "$AMORTIZER_NAME"
   --amortizer-iterations "$AMORTIZER_ITERATIONS"
   --steps-per-iteration "$STEPS_PER_ITERATION"
@@ -77,6 +82,9 @@ args=(
 
 if [[ "$SKIP_DATA" == "1" ]]; then
   args+=(--skip-data)
+fi
+if [[ "$SKIP_AMORTIZER" == "1" ]]; then
+  args+=(--skip-amortizer)
 fi
 
 "$PYTHON_BIN" -u "${args[@]}"

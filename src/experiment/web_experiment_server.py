@@ -16,7 +16,6 @@ import re
 import sys
 import threading
 import time
-import traceback
 import webbrowser
 from typing import Any
 
@@ -188,8 +187,6 @@ class WebExperimentServer:
         self.session_id: str | None = None
         self.participant_id: str | None = None
         self.cpi_order: list[int] = []
-        self.cpi_confirmations: dict[int, dict[str, Any]] = {}
-        self.hardware: dict[str, Any] = {}
         self.templates = []
         self.template_by_id = {}
         self.trial: dict[str, Any] | None = None
@@ -246,8 +243,6 @@ class WebExperimentServer:
         self.session_id = None
         self.participant_id = None
         self.cpi_order = []
-        self.cpi_confirmations = {}
-        self.hardware = {}
         self.templates = []
         self.template_by_id = {}
         self.trial = None
@@ -279,44 +274,23 @@ class WebExperimentServer:
 
     async def websocket(self, request: web.Request):
         if self.ws is not None and not self.ws.closed:
-            if self.logger is not None:
-                return web.Response(
-                    status=409,
-                    text="An experiment session is already active",
-                )
-            # The launcher may leave an unused setup tab connected. Before a
-            # session starts, let the newest tab take over cleanly.
-            await self.ws.close(
-                code=1001,
-                message=b"Replaced by a newer experiment tab",
-            )
+            return web.Response(status=409, text="An experiment browser is already connected")
         ws = web.WebSocketResponse(heartbeat=10, max_msg_size=16 * 1024 * 1024)
         await ws.prepare(request)
         self.ws = ws
-        await self._send({"type": "protocol_config", "experiment": self.exp})
         try:
             async for message in ws:
                 if message.type == WSMsgType.TEXT:
                     try:
                         await self._handle_message(message.json())
                     except (ValueError, KeyError, TypeError) as exc:
-                        await ws.send_json({"type": "error", "message": str(exc)})
-                    except Exception as exc:
-                        traceback.print_exc()
-                        await ws.send_json({
-                            "type": "error",
-                            "message": (
-                                "The local recorder could not start the session: "
-                                f"{type(exc).__name__}: {exc}"
-                            ),
-                        })
+                        await self._send({"type": "error", "message": str(exc)})
                 elif message.type == WSMsgType.ERROR:
                     break
         finally:
             if self.trial and self.trial.get("state") == "active":
                 await self._finish_trial("connection_lost", valid=False)
-            if self.ws is ws:
-                self.ws = None
+            self.ws = None
         return ws
 
     async def _send(self, payload: dict[str, Any]):
@@ -339,8 +313,6 @@ class WebExperimentServer:
                 await self._finish_trial(reason, valid=False)
         elif message_type == "trial_client_data":
             await self._save_trial(data)
-        elif message_type == "cpi_confirmation":
-            await self._confirm_cpi(data)
         elif message_type == "pause_event":
             if self.logger:
                 self.logger.submit_event({
@@ -399,24 +371,12 @@ class WebExperimentServer:
         hardware["declared_resolution_px"] = self.display_calibration["resolution_px"]
         hardware["declared_refresh_hz"] = self.display_calibration["refresh_hz"]
         hardware["mousepad_condition"] = self.mousepad_condition
-        polling_hz = int(hardware.get("declared_mouse_polling_hz", 0))
-        if polling_hz <= 0:
-            raise ValueError("Mouse polling rate must be a positive integer")
-        cpi_setting_method = str(hardware.get("cpi_setting_method", "")).strip()
-        if cpi_setting_method not in {
-            "mouse_software", "hardware_button", "other_verified"
-        }:
-            raise ValueError("A valid CPI setting method is required")
-        hardware["declared_mouse_polling_hz"] = polling_hz
-        hardware["cpi_setting_method"] = cpi_setting_method
-        self.hardware = hardware
         self.participant_id = participant_id
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{participant_id}_web"
         cpi_values = [int(v) for v in self.exp["cpi_values"]]
         self.cpi_order = counterbalanced_cpi_order(
             participant_id, cpi_values, int(self.exp["seed"])
         )
-        self.cpi_confirmations = {}
         count = int(self.exp["practice_trials_per_cpi"]) + int(
             self.exp["measured_trials_per_cpi"]
         )
@@ -426,9 +386,6 @@ class WebExperimentServer:
             count, virtual_size, tuple(float(v) for v in self.exp["target_id_range"]),
             int(self.exp["seed"]),
             cursor_position_m=(0.0, 0.0) if start_target_enabled else None,
-            target_radius_range_m=tuple(
-                float(v) for v in self.exp["target_radius_range_m"]
-            ),
         )
         self.template_by_id = {item.template_id: item for item in self.templates}
         self.current_cursor = np.zeros(2, dtype=np.float64)
@@ -436,7 +393,7 @@ class WebExperimentServer:
         output_dir = self.output_root / self.session_id
         clock = time.get_clock_info("perf_counter")
         metadata = {
-            "schema_version": 2,
+            "schema_version": 1,
             "interface": "local_html_with_python_recorder",
             "input_backend": self.input_backend,
             "session_id": self.session_id,
@@ -502,42 +459,6 @@ class WebExperimentServer:
             "input_backend": self.input_backend,
         })
 
-    async def _confirm_cpi(self, data: dict[str, Any]):
-        if self.logger is None:
-            raise ValueError("Start a session before confirming CPI")
-        block_index = int(data["block_index"])
-        if block_index < 1 or block_index > len(self.cpi_order):
-            raise ValueError("Invalid CPI block index")
-        cpi = int(data["cpi"])
-        expected_cpi = self.cpi_order[block_index - 1]
-        if cpi != expected_cpi:
-            raise ValueError(
-                f"CPI confirmation mismatch: block {block_index} expects {expected_cpi} CPI"
-            )
-        timestamp_ns = time.perf_counter_ns()
-        confirmation = {
-            "cpi": cpi,
-            "timestamp_ns": timestamp_ns,
-            "browser_ms": data.get("browser_ms"),
-            "cpi_setting_method": self.hardware.get("cpi_setting_method", "not_reported"),
-        }
-        self.cpi_confirmations[block_index] = confirmation
-        self.logger.submit_event({
-            "event": "block_start",
-            "session_id": self.session_id,
-            "block_index": block_index,
-            "cpi": cpi,
-            "mousepad_condition": self.mousepad_condition,
-            "timestamp_ns": timestamp_ns,
-            "input_backend": self.input_backend,
-        })
-        self.logger.submit_event({
-            "event": "cpi_confirmed",
-            "session_id": self.session_id,
-            "block_index": block_index,
-            **confirmation,
-        })
-
     async def _prepare_trial(self, data: dict[str, Any]):
         if self.logger is None:
             raise ValueError("Start a session first")
@@ -549,16 +470,6 @@ class WebExperimentServer:
         cpi = int(data["cpi"])
         if cpi not in self.cpi_order:
             raise ValueError("Invalid CPI condition")
-        block_index = int(data["block_index"])
-        if block_index < 1 or block_index > len(self.cpi_order):
-            raise ValueError("Invalid block index")
-        if cpi != self.cpi_order[block_index - 1]:
-            raise ValueError("CPI does not match the current counterbalanced block")
-        if (
-            bool(self.exp.get("require_cpi_confirmation", False))
-            and block_index not in self.cpi_confirmations
-        ):
-            raise ValueError(f"Confirm {cpi} CPI before starting this block")
         phase = str(data["phase"])
         if phase not in {"practice", "measured"}:
             raise ValueError("Invalid trial phase")
@@ -576,7 +487,6 @@ class WebExperimentServer:
             cursor,
             tuple(float(v) for v in self.config["display"]["virtual_size_m"]),
             float(self.exp.get("start_target_radius_m", 0.006)),
-            tuple(float(v) for v in self.exp["target_radius_range_m"]),
         )
         target = np.array([template.target_x_m, template.target_y_m], dtype=np.float64)
         if self.raw_mouse is not None:
@@ -585,7 +495,7 @@ class WebExperimentServer:
             "state": "ready", "trial_id": self.trial_sequence,
             "template": template, "base_template": base_template,
             "phase": phase, "trial_stage": trial_stage, "cpi": cpi,
-            "block_index": block_index, "attempt": int(data.get("attempt", 1)),
+            "block_index": int(data["block_index"]), "attempt": int(data.get("attempt", 1)),
             "cursor": cursor, "cursor_start": cursor.copy(), "target": target,
             "path_length": 0.0, "minimum_distance": float(np.linalg.norm(cursor - target)),
             "first_movement_ns": None, "previous_raw_ns": None,
@@ -1035,12 +945,6 @@ class WebExperimentServer:
             "template_id": template.template_id, "phase": trial["phase"],
             "trial_stage": trial["trial_stage"],
             "block_index": trial["block_index"], "cpi": trial["cpi"],
-            "cpi_confirmed": trial["block_index"] in self.cpi_confirmations,
-            "cpi_confirmation_timestamp_ns": (
-                self.cpi_confirmations.get(trial["block_index"], {}).get("timestamp_ns")
-            ),
-            "cpi_setting_method": self.hardware.get("cpi_setting_method", "not_reported"),
-            "declared_mouse_polling_hz": self.hardware.get("declared_mouse_polling_hz"),
             "mousepad_condition": self.mousepad_condition,
             "input_backend": self.input_backend,
             "attempt": trial["attempt"], "valid": trial["valid"],

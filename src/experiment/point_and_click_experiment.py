@@ -253,7 +253,6 @@ class PointAndClickExperiment:
         self.focused = True
         self.current_cursor = np.zeros(2, dtype=np.float64)
         self.current_raw_session_pos = np.zeros(2, dtype=np.float64)
-        self.current_cpi_confirmation_ns: int | None = None
 
         cpi_values = [int(v) for v in self.exp["cpi_values"]]
         self.cpi_order = counterbalanced_cpi_order(
@@ -270,9 +269,6 @@ class PointAndClickExperiment:
             cursor_position_m=(0.0, 0.0)
             if bool(self.exp.get("start_target_enabled", False))
             else None,
-            target_radius_range_m=tuple(
-                float(v) for v in self.exp["target_radius_range_m"]
-            ),
         )
 
         output_root = Path(args.output_root)
@@ -292,7 +288,7 @@ class PointAndClickExperiment:
     def session_metadata(self) -> dict[str, Any]:
         clock_info = time.get_clock_info("perf_counter")
         return {
-            "schema_version": 2,
+            "schema_version": 1,
             "session_id": self.session_id,
             "input_backend": self.input_backend,
             "participant": {
@@ -312,8 +308,6 @@ class PointAndClickExperiment:
                 "display_resolution_px": list(self.resolution),
                 "display_physical_size_m": self.display_cfg["physical_size_m"],
                 "declared_refresh_hz": self.refresh_hz,
-                "declared_mouse_polling_hz": self.args.mouse_polling_hz,
-                "cpi_setting_method": self.args.cpi_setting_method,
                 "expected_mouse_polling_hz": self.config["logging"]["expected_mouse_polling_hz"],
             },
             "task": {
@@ -697,7 +691,6 @@ class PointAndClickExperiment:
             cursor,
             self.virtual_size,
             float(self.exp.get("start_target_radius_m", 0.006)),
-            tuple(float(v) for v in self.exp["target_radius_range_m"]),
         )
         cursor_start = cursor.copy()
         raw_mouse.drain()
@@ -955,10 +948,6 @@ class PointAndClickExperiment:
             "template_id": template.template_id, "phase": phase,
             "trial_stage": trial_stage,
             "block_index": block_index, "cpi": cpi,
-            "cpi_confirmed": self.current_cpi_confirmation_ns is not None,
-            "cpi_confirmation_timestamp_ns": self.current_cpi_confirmation_ns,
-            "cpi_setting_method": self.args.cpi_setting_method,
-            "declared_mouse_polling_hz": self.args.mouse_polling_hz,
             "mousepad_condition": self.mousepad_condition,
             "input_backend": self.input_backend,
             "attempt": attempt,
@@ -1067,21 +1056,11 @@ class PointAndClickExperiment:
                     "Do not change the Windows pointer sensitivity.",
                     "Press SPACE when you are ready.",
                 ])
-                self.current_cpi_confirmation_ns = time.perf_counter_ns()
                 logger.submit_event({
                     "event": "block_start", "session_id": self.session_id,
                     "block_index": block_index, "cpi": cpi,
                     "mousepad_condition": self.mousepad_condition,
-                    "timestamp_ns": self.current_cpi_confirmation_ns,
-                    "input_backend": self.input_backend,
-                })
-                logger.submit_event({
-                    "event": "cpi_confirmed", "session_id": self.session_id,
-                    "block_index": block_index, "cpi": cpi,
-                    "cpi_setting_method": self.args.cpi_setting_method,
-                    "confirmed": True,
-                    "mousepad_condition": self.mousepad_condition,
-                    "timestamp_ns": self.current_cpi_confirmation_ns,
+                    "timestamp_ns": time.perf_counter_ns(),
                     "input_backend": self.input_backend,
                 })
                 for phase, phase_templates in (
@@ -1176,8 +1155,6 @@ class PointAndClickExperiment:
 
 def validate(config: dict[str, Any], participant: str) -> None:
     exp = config["experiment"]
-    if bool(exp.get("require_cpi_confirmation", False)) and not exp.get("cpi_values"):
-        raise ValueError("CPI confirmation requires at least one CPI condition")
     virtual_size = tuple(float(v) for v in config["display"]["virtual_size_m"])
     n = int(exp["practice_trials_per_cpi"]) + int(exp["measured_trials_per_cpi"])
     templates = make_trial_templates(
@@ -1188,17 +1165,10 @@ def validate(config: dict[str, Any], participant: str) -> None:
         cursor_position_m=(0.0, 0.0)
         if bool(exp.get("start_target_enabled", False))
         else None,
-        target_radius_range_m=tuple(exp["target_radius_range_m"]),
     )
     order = counterbalanced_cpi_order(participant, exp["cpi_values"], int(exp["seed"]))
     assert len(templates) == n
     assert all(exp["target_id_range"][0] <= t.fitts_id <= exp["target_id_range"][1] for t in templates)
-    assert all(
-        exp["target_radius_range_m"][0]
-        <= t.target_radius_m
-        <= exp["target_radius_range_m"][1]
-        for t in templates
-    )
     print(json.dumps({
         "status": "ok", "templates": len(templates), "cpi_order": order,
         "radius_range_m": [min(t.target_radius_m for t in templates),
@@ -1232,12 +1202,6 @@ def build_parser():
     parser.add_argument("--mouse-experience", default="not_reported")
     parser.add_argument("--gaming-hours", type=float)
     parser.add_argument("--mouse-model", default="not_reported")
-    parser.add_argument("--mouse-polling-hz", type=int, default=1000)
-    parser.add_argument(
-        "--cpi-setting-method",
-        choices=("mouse_software", "hardware_button", "other_verified"),
-        default="mouse_software",
-    )
     parser.add_argument(
         "--mousepad-condition",
         choices=("firm", "soft", "glass", "unspecified"),

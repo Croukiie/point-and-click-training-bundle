@@ -168,7 +168,6 @@ def run_comparison(
     trial_counts: list[int] | None,
     bootstrap_repeats: int,
     seed: int,
-    shared_only: bool = False,
 ) -> dict[str, Any]:
     stats = pd.read_csv(export_dir / "human_amortizer_stats.csv")
     required = {
@@ -196,23 +195,21 @@ def run_comparison(
         raise ValueError("The selected 2-step model must use CPI as its only sub parameter")
 
     shared_uses_trajectory = model_uses_trajectory(shared)
-    independent = None
-    if not shared_only:
-        if independent_model is None:
-            independent_model = (
-                DEFAULT_INDEPENDENT_TRAJECTORY
-                if shared_uses_trajectory
-                else DEFAULT_INDEPENDENT_SUMMARY
-            )
-        independent = PnCInferer(
-            independent_model,
-            ckpt=independent_checkpoint,
-            verbose=True,
+    if independent_model is None:
+        independent_model = (
+            DEFAULT_INDEPENDENT_TRAJECTORY
+            if shared_uses_trajectory
+            else DEFAULT_INDEPENDENT_SUMMARY
         )
-        if model_uses_trajectory(independent) != shared_uses_trajectory:
-            raise ValueError(
-                "Shared and independent amortizers must use the same trajectory features"
-            )
+    independent = PnCInferer(
+        independent_model,
+        ckpt=independent_checkpoint,
+        verbose=True,
+    )
+    if model_uses_trajectory(independent) != shared_uses_trajectory:
+        raise ValueError(
+            "Shared and independent amortizers must use the same trajectory features"
+        )
 
     trajectories = (
         trajectory_lookup(export_dir / "human_amortizer_trajectories.csv")
@@ -282,19 +279,15 @@ def run_comparison(
                         **shared_main,
                         **shared_blocks[anonymous_group],
                     }
-                    inference_results = [
+                    independent_values = infer_subset(
+                        independent,
+                        selected,
+                        trajectories,
+                    )
+                    for structure, model, inferred in (
                         ("shared", shared_model, shared_values),
-                    ]
-                    if independent is not None:
-                        independent_values = infer_subset(
-                            independent,
-                            selected,
-                            trajectories,
-                        )
-                        inference_results.append(
-                            ("independent", independent_model, independent_values)
-                        )
-                    for structure, model, inferred in inference_results:
+                        ("independent", independent_model, independent_values),
+                    ):
                         predicted = float(inferred["cpi"])
                         rows.append({
                             "fit_structure": structure,
@@ -339,7 +332,6 @@ def run_comparison(
         "shared_checkpoint": shared_checkpoint,
         "independent_model": independent_model,
         "independent_checkpoint": independent_checkpoint,
-        "shared_only": shared_only,
         "uses_trajectory": shared_uses_trajectory,
         "shared_parameters": list(SHARED_PARAMETERS),
         "block_specific_parameters": list(BLOCK_PARAMETERS),
@@ -372,11 +364,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shared-checkpoint", type=int)
     parser.add_argument("--independent-model")
     parser.add_argument("--independent-checkpoint", type=int, default=200)
-    parser.add_argument(
-        "--shared-only",
-        action="store_true",
-        help="Run only the shared amortizer without an independent-fit baseline.",
-    )
     parser.add_argument("--export-dir", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--trial-counts", type=parse_trial_counts, default=None)
@@ -403,7 +390,6 @@ def main(argv=None) -> int:
         trial_counts=args.trial_counts,
         bootstrap_repeats=args.bootstrap_repeats,
         seed=args.seed,
-        shared_only=args.shared_only,
     )
     print("\nCPI ordering comparison:")
     print(result["ordering"].to_string(index=False))

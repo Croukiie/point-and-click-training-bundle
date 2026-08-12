@@ -44,6 +44,31 @@ SHARED_PARAMETERS = (
 )
 BLOCK_PARAMETERS = ("cpi",)
 
+CURVATURE_FEATURES = (
+    "cursor_total_abs_turn_rad",
+    "cursor_net_turn_rad",
+    "cursor_mean_abs_turn_rad",
+    "cursor_p90_abs_turn_rad",
+    "cursor_turn_energy_rad2",
+    "cursor_max_deviation_normalized",
+    "cursor_path_excess_ratio",
+    "cursor_early_mean_abs_turn_rad",
+    "cursor_middle_mean_abs_turn_rad",
+    "cursor_late_mean_abs_turn_rad",
+)
+
+# Keep the original feature set available for exact baseline reproduction.
+# CLEAN7 removes the two strongest human/simulation distribution mismatches and
+# one member of the perfectly redundant total/mean-turn pair.
+FEATURE_PROFILES = {
+    "full": (),
+    "clean7": (
+        "cursor_total_abs_turn_rad",
+        "cursor_p90_abs_turn_rad",
+        "cursor_path_excess_ratio",
+    ),
+}
+
 
 def parse_checkpoint(value: str):
     if value in {"best", "last"}:
@@ -72,9 +97,17 @@ def build_simulator_config(
     })
 
 
-def build_data_config(variant: str) -> Box:
+def build_data_config(variant: str, feature_profile: str = "full") -> Box:
     config = deepcopy(INF.normalize.curvature)
     config.traj.ignore_traj = variant == "summary-only"
+    removed = set(FEATURE_PROFILES[feature_profile])
+    missing = removed - set(config.stat.list)
+    if missing:
+        raise ValueError(
+            "Feature profile references unavailable statistics: "
+            f"{', '.join(sorted(missing))}"
+        )
+    config.stat.list = [feature for feature in config.stat.list if feature not in removed]
     return config
 
 
@@ -108,6 +141,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--variant",
         choices=("trajectory", "summary-only"),
         default="trajectory",
+    )
+    parser.add_argument(
+        "--feature-profile",
+        choices=tuple(FEATURE_PROFILES),
+        default="full",
+        help=(
+            "Static-feature ablation profile. 'clean7' removes total absolute "
+            "turn, P90 absolute turn, and path excess from the summary input."
+        ),
     )
     parser.add_argument("--skip-data", action="store_true")
     parser.add_argument("--skip-amortizer", action="store_true")
@@ -151,6 +193,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit(
             "This experiment is defined for exactly three anonymous CPI blocks"
         )
+    if args.feature_profile != "full" and args.variant != "summary-only":
+        raise SystemExit(
+            "Curvature feature ablations must use --variant summary-only; "
+            "otherwise the trajectory encoder still receives the removed cues."
+        )
 
 
 def main(argv=None) -> int:
@@ -162,16 +209,36 @@ def main(argv=None) -> int:
         args.rl_checkpoint,
         args.trajectory_downsample,
     )
-    data_config = build_data_config(args.variant)
+    data_config = build_data_config(args.variant, args.feature_profile)
     training_config = build_training_config(args.device)
+
+    removed_features = list(FEATURE_PROFILES[args.feature_profile])
+    retained_curvature = [
+        feature for feature in CURVATURE_FEATURES if feature not in removed_features
+    ]
 
     print("Shared CPI 2-step design", flush=True)
     print(f"  RL model: {args.rl_model} ({args.rl_checkpoint})", flush=True)
     print(f"  Variant: {args.variant}", flush=True)
+    print(f"  Feature profile: {args.feature_profile}", flush=True)
+    print(
+        "  Removed summary features: "
+        + (", ".join(removed_features) if removed_features else "none"),
+        flush=True,
+    )
+    print(
+        f"  Retained curvature features ({len(retained_curvature)}): "
+        f"{', '.join(retained_curvature)}",
+        flush=True,
+    )
     print(f"  Shared parameters ({len(SHARED_PARAMETERS)}): {', '.join(SHARED_PARAMETERS)}", flush=True)
     print(f"  Block-specific parameters: {', '.join(BLOCK_PARAMETERS)}", flush=True)
     print(f"  Anonymous blocks per participant: {args.blocks_per_participant}", flush=True)
     print("  True CPI is not an input feature or a grouping label.", flush=True)
+    print(
+        f"  Trajectory and motion-summary sampling: {args.trajectory_downsample} Hz",
+        flush=True,
+    )
 
     if args.dry_run:
         print("DRY_RUN_OK", flush=True)
@@ -245,7 +312,7 @@ def main(argv=None) -> int:
             validation_trials=args.validation_trials,
         )
         design = {
-            "schema_version": 1,
+            "schema_version": 2,
             "inference_structure": "shared_main_block_specific_cpi",
             "shared_parameters": list(SHARED_PARAMETERS),
             "block_specific_parameters": list(BLOCK_PARAMETERS),
@@ -253,6 +320,12 @@ def main(argv=None) -> int:
             "block_labels_are_inputs": False,
             "true_cpi_is_input": False,
             "variant": args.variant,
+            "feature_profile": args.feature_profile,
+            "removed_summary_features": removed_features,
+            "retained_curvature_features": retained_curvature,
+            "stat_features": list(data_config.stat.list),
+            "trajectory_hz": args.trajectory_downsample,
+            "motion_summary_hz": args.trajectory_downsample,
             "comparison_baseline": "independent PnCInferer fit",
         }
         model_root = (

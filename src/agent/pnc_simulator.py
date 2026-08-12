@@ -98,34 +98,41 @@ class PnCEpisodeRecordDefault:
         self.replay = self.replay_and_save()
 
 
-    def get_summary_result(self):
+    def get_summary_result(self, downsample=None):
         target_vel = self.initial_task_cond["target_spd"] * cos_sin_array(self.initial_task_cond["target_dir"])
-        traverse_length = np.sum(np.linalg.norm(np.diff(self.replay["cursor_pos"], axis=0), axis=1))
+        trajectory = self.get_trajectory_result(downsample=downsample)
+        timestamp = trajectory[FIELD.TIMESTAMP].to_numpy(dtype=float)
+        cursor_pos = trajectory[
+            [FIELD.CURSOR_POS_X, FIELD.CURSOR_POS_Y]
+        ].to_numpy(dtype=float)
+        hand_pos = trajectory[
+            [FIELD.HAND_POS_X, FIELD.HAND_POS_Y]
+        ].to_numpy(dtype=float)
+
+        cursor_segment_length = np.linalg.norm(np.diff(cursor_pos, axis=0), axis=1)
+        hand_segment_length = np.linalg.norm(np.diff(hand_pos, axis=0), axis=1)
+        traverse_length = float(np.sum(cursor_segment_length))
         curvature_features = cursor_curvature_features(
-            self.replay["cursor_pos"],
+            cursor_pos,
             target_position=self.initial_task_cond["target_pos"],
         )
-        hand_traverse_length = np.sum(
-            np.linalg.norm(np.diff(self.replay["hand_pos"], axis=0), axis=1)
-        )
+        hand_traverse_length = float(np.sum(hand_segment_length))
         click_rel_endpt = self.result.target_endpt - self.result.click_endpt
         target_distance = np.linalg.norm(self.initial_task_cond["target_pos"] - self.initial_task_cond["cursor_pos"])
         iod = np.log2(target_distance / (2 * self.initial_task_cond["target_rad"]) + 1)
-        # max_cursor_spd = np.max(np.linalg.norm(np.diff(self.replay["cursor_pos"], axis=0), axis=1) / (self.intv.interp / 1000))
-        timestamp = np.arange(self.replay["target_pos"].shape[0]) * self.intv.interp / 1000
-        max_cursor_spd = np.max(derivative_central(timestamp[1:], 
-                                            np.cumsum(np.linalg.norm(np.diff(self.replay["cursor_pos"], axis=0), axis=1))))
-        max_hand_spd = np.max(
-            derivative_central(
-                timestamp[1:],
-                np.cumsum(
-                    np.linalg.norm(
-                        np.diff(self.replay["hand_pos"], axis=0),
-                        axis=1,
-                    )
-                ),
+
+        sampled_dt = np.diff(timestamp)
+        valid_dt = sampled_dt > 0
+        if np.any(valid_dt):
+            max_cursor_spd = float(
+                np.max(cursor_segment_length[valid_dt] / sampled_dt[valid_dt])
             )
-        )
+            max_hand_spd = float(
+                np.max(hand_segment_length[valid_dt] / sampled_dt[valid_dt])
+            )
+        else:
+            max_cursor_spd = 0.0
+            max_hand_spd = 0.0
 
         action_kc = self.actions["kc"].to_numpy().astype(int)
         act_click_indices = np.where((action_kc == 1) | (action_kc == 2))[0]
@@ -649,7 +656,7 @@ class PnCSimulator:
     def get_simulation_result(self, return_traj=False, downsample=None):
         summ, traj = list(), list()
         for rec in self.simulation:
-            summ.append(rec.get_summary_result())
+            summ.append(rec.get_summary_result(downsample=downsample))
             if return_traj:
                 traj.append(rec.get_trajectory_result(downsample=downsample))
         summ = pd.concat(summ)

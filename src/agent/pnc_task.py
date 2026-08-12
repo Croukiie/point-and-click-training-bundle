@@ -166,8 +166,7 @@ class PnCGame:
                     target_rad = target_dist / (2**task_id - 1) / 2
                     if np.all(target_pos >= -self.window_qt + target_rad) and \
                         np.all(target_pos <= self.window_qt - target_rad) and \
-                            target_dist >= target_rad and \
-                            self.target_rad_range[0] <= target_rad <= self.target_rad_range[1]:
+                            target_dist >= target_rad:
                         break
                 self.target_pos = target_pos
                 self.target_rad = target_rad
