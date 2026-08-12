@@ -67,6 +67,24 @@ FEATURE_PROFILES = {
         "cursor_p90_abs_turn_rad",
         "cursor_path_excess_ratio",
     ),
+    # Strict transfer subsets selected from the simulation-human audit.  These
+    # profiles change input features only; every amortizer training setting is
+    # inherited unchanged from the Elisa shared-CPI pipeline.
+    "aligned2": tuple(
+        feature for feature in CURVATURE_FEATURES
+        if feature not in {
+            "cursor_turn_energy_rad2",
+            "cursor_late_mean_abs_turn_rad",
+        }
+    ),
+    "aligned3": tuple(
+        feature for feature in CURVATURE_FEATURES
+        if feature not in {
+            "cursor_turn_energy_rad2",
+            "cursor_early_mean_abs_turn_rad",
+            "cursor_late_mean_abs_turn_rad",
+        }
+    ),
 }
 
 
@@ -148,7 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="full",
         help=(
             "Static-feature ablation profile. 'clean7' removes total absolute "
-            "turn, P90 absolute turn, and path excess from the summary input."
+            "turn, P90 absolute turn, and path excess; 'aligned2' and "
+            "'aligned3' retain only the audited curvature subsets."
         ),
     )
     parser.add_argument("--skip-data", action="store_true")

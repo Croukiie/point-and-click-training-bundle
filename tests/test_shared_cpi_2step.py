@@ -7,6 +7,8 @@ from src.experiment.infer_human_shared_cpi import parse_trial_counts
 from src.nets.amortizer import ConditionalRegressionForTrialData
 from src.scripts.shared_cpi_2step_run import (
     BLOCK_PARAMETERS,
+    CURVATURE_FEATURES,
+    FEATURE_PROFILES,
     SHARED_PARAMETERS,
     build_data_config,
     build_simulator_config,
@@ -29,6 +31,29 @@ class SharedCpiConfigurationTests(unittest.TestCase):
         self.assertFalse(trajectory.traj.ignore_traj)
         self.assertTrue(summary.traj.ignore_traj)
         self.assertEqual(trajectory.stat.list, summary.stat.list)
+
+    def test_aligned_profiles_only_change_curvature_inputs(self):
+        expected = {
+            "aligned2": {
+                "cursor_turn_energy_rad2",
+                "cursor_late_mean_abs_turn_rad",
+            },
+            "aligned3": {
+                "cursor_turn_energy_rad2",
+                "cursor_early_mean_abs_turn_rad",
+                "cursor_late_mean_abs_turn_rad",
+            },
+        }
+        full = build_data_config("summary-only", "full")
+        ordinary = set(full.stat.list) - set(CURVATURE_FEATURES)
+        for profile, retained in expected.items():
+            config = build_data_config("summary-only", profile)
+            self.assertEqual(set(config.stat.list) - ordinary, retained)
+            self.assertEqual(set(config.stat.list) & ordinary, ordinary)
+            self.assertEqual(
+                set(FEATURE_PROFILES[profile]),
+                set(CURVATURE_FEATURES) - retained,
+            )
 
     def test_trial_count_parser(self):
         self.assertIsNone(parse_trial_counts("all"))
