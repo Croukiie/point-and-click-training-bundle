@@ -4,6 +4,8 @@ This code implements the simulation queries.
 
 Code written by June-Seop Yoon
 """
+from __future__ import annotations
+
 import stat
 import numpy as np
 import pandas as pd
