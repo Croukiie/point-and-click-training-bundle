@@ -44,6 +44,11 @@ statistics, shared nine-parameter participant vector, and block-specific CPI.
   -p 'test_imported_ablation_contracts.py' -v
 ```
 
+Bundles without `src/experiment/export_human_amortizer_data.py` skip only the
+three human-resampling contracts. They still run the four contracts that verify
+the ablation ladder, feature isolation, shared-CPI partition, and stable Slurm
+array indices, plus the early-versus-late curvature-formula contract.
+
 ## Print the matrix
 
 ```bash

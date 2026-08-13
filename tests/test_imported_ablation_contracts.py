@@ -6,7 +6,10 @@ import unittest
 
 import numpy as np
 
-from src.experiment.export_human_amortizer_data import _resample_movement
+try:
+    from src.experiment.export_human_amortizer_data import _resample_movement
+except ModuleNotFoundError:
+    _resample_movement = None
 from src.scripts.shared_cpi_ablation_matrix import (
     ABLATION_ORDER,
     PROFILE_REMOVED_FEATURES,
@@ -82,7 +85,7 @@ class AblationMatrixContracts(unittest.TestCase):
         self.assertEqual([item["name"] for item in profiles], list(ABLATION_ORDER))
 
 
-class ImportedTrajectoryContracts(unittest.TestCase):
+class ImportedCurvatureContracts(unittest.TestCase):
     def test_early_and_late_turn_features_distinguish_path_phases(self):
         x = np.linspace(0.0, 1.0, 1001)
         y = np.where(x <= 0.55, 0.0, 2.0 * (x - 0.55) ** 2)
@@ -95,6 +98,12 @@ class ImportedTrajectoryContracts(unittest.TestCase):
             features["cursor_early_mean_abs_turn_rad"] + 1e-4,
         )
 
+
+@unittest.skipIf(
+    _resample_movement is None,
+    "human export module is not installed in this bundle",
+)
+class ImportedHumanResamplingContracts(unittest.TestCase):
     def test_duplicate_timestamps_keep_the_last_cursor_position(self):
         raw = [
             {"time_from_onset_ns": "0", "cursor_x_m": "0", "cursor_y_m": "0"},

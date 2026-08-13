@@ -164,7 +164,13 @@ class PnCGame:
                     target_pos = np.random.uniform(-self.window_qt, self.window_qt)
                     target_dist = np.linalg.norm(target_pos - self.cursor_pos)
                     target_rad = target_dist / (2**task_id - 1) / 2
-                    if np.all(target_pos >= -self.window_qt + target_rad) and \
+                    target_radius_is_configured = (
+                        self.target_rad_range[0]
+                        <= target_rad
+                        <= self.target_rad_range[1]
+                    )
+                    if target_radius_is_configured and \
+                        np.all(target_pos >= -self.window_qt + target_rad) and \
                         np.all(target_pos <= self.window_qt - target_rad) and \
                             target_dist >= target_rad:
                         break
