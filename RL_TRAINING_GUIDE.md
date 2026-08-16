@@ -328,3 +328,30 @@ surface:
 
 Accepted values are `firm`, `soft`, `glass`, and `unspecified`. The condition
 is written to session metadata and to every raw-event, frame, and trial row.
+
+## Radius-matched Elisa RL and shared-CPI amortizer
+
+This pipeline freezes the simulated target radius to the human experiment
+range (1.25--7 mm), trains Elisa's RL implementation, and then trains the
+summary-only shared-CPI amortizer with the clean7 curvature features. The
+amortizer job starts only after the RL job succeeds.
+
+Run the small end-to-end check first on the Yonsei cluster:
+
+```bash
+bash submit_radius_matched_rl_clean7_pipeline_yonsei.sh smoke
+```
+
+After the smoke run succeeds, submit the full experiment:
+
+```bash
+bash submit_radius_matched_rl_clean7_pipeline_yonsei.sh full
+```
+
+The two submitted job IDs are saved in
+`.last_radius_matched_pipeline_jobs`. Check both with:
+
+```bash
+read -r RL_JOB AMORTIZER_JOB < .last_radius_matched_pipeline_jobs
+squeue -j "$RL_JOB,$AMORTIZER_JOB"
+```

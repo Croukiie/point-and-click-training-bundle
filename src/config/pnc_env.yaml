@@ -56,6 +56,32 @@ default_ori_asym:
     min_deg: -10.0
     max_deg: 20.0
 
+# Frozen profile for the radius-matched CPI transfer experiment. Keep this
+# separate from ``default`` so later edits cannot silently change its task.
+radius_matched_cpi:
+  <<: *default
+  range:
+    window_width:
+      max: 0.5313124474
+      min: 0.5313124474
+    target:
+      radius:
+        max: 0.007
+        min: 0.00125
+      speed:
+        max: 0.0
+        min: 0.0
+      id:
+        min: 2.5
+        max: 7.2
+  option:
+    speed:
+      sample_min_prob: 0.0
+    pos:
+      min_dist_to_cursor: 0.005
+    id:
+      uniform: True
+
 
 static_target:
   mouse_gain: 1

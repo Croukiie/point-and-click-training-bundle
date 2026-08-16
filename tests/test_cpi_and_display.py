@@ -28,6 +28,16 @@ class CpiAndDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(width, 0.5313124474, places=9)
         self.assertAlmostEqual(height, 0.2988632517, places=9)
 
+    def test_radius_matched_cpi_profile_is_frozen_to_human_task(self):
+        profile = ENV.radius_matched_cpi
+
+        self.assertAlmostEqual(profile.range.target.radius.min, 0.00125)
+        self.assertAlmostEqual(profile.range.target.radius.max, 0.007)
+        self.assertAlmostEqual(profile.range.window_width.min, 0.5313124474)
+        self.assertAlmostEqual(profile.range.window_width.max, 0.5313124474)
+        self.assertEqual(profile.mouse_reference_cpi, 400)
+        self.assertAlmostEqual(profile.mouse_gain, ENV.default.mouse_gain)
+
     def test_initial_mouse_gain_matches_full_hd_pixel_pitch(self):
         width = ENV.default.range.window_width.max
         reference_cpi = ENV.default.mouse_reference_cpi
