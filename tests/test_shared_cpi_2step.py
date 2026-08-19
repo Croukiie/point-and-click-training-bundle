@@ -55,6 +55,15 @@ class SharedCpiConfigurationTests(unittest.TestCase):
                 set(CURVATURE_FEATURES) - retained,
             )
 
+    def test_speed_path_profile_removes_every_curvature_input(self):
+        full = build_data_config("summary-only", "full")
+        speed_path = build_data_config("summary-only", "speed_path")
+        ordinary = set(full.stat.list) - set(CURVATURE_FEATURES)
+
+        self.assertEqual(set(speed_path.stat.list), ordinary)
+        self.assertTrue({"traverse_length", "max_cursor_speed"} <= ordinary)
+        self.assertEqual(set(FEATURE_PROFILES["speed_path"]), set(CURVATURE_FEATURES))
+
     def test_trial_count_parser(self):
         self.assertIsNone(parse_trial_counts("all"))
         self.assertEqual(parse_trial_counts("64,16,64"), [16, 64])

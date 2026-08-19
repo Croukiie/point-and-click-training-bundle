@@ -62,6 +62,9 @@ CURVATURE_FEATURES = (
 # one member of the perfectly redundant total/mean-turn pair.
 FEATURE_PROFILES = {
     "full": (),
+    # Curvature-free control: retain the ordinary task/performance summaries
+    # plus cursor path length and maximum speed.
+    "speed_path": CURVATURE_FEATURES,
     "clean7": (
         "cursor_total_abs_turn_rad",
         "cursor_p90_abs_turn_rad",
@@ -165,9 +168,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(FEATURE_PROFILES),
         default="full",
         help=(
-            "Static-feature ablation profile. 'clean7' removes total absolute "
-            "turn, P90 absolute turn, and path excess; 'aligned2' and "
-            "'aligned3' retain only the audited curvature subsets."
+            "Static-feature ablation profile. 'speed_path' removes every "
+            "curvature statistic; 'clean7' removes total absolute turn, P90 "
+            "absolute turn, and path excess; 'aligned2' and 'aligned3' retain "
+            "only the audited curvature subsets."
         ),
     )
     parser.add_argument("--skip-data", action="store_true")
