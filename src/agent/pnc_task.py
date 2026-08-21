@@ -84,6 +84,7 @@ class PnCGame:
         self.target_dir = 0.0     # 0 degree -> Left to Right. Counterclockwise rotation
         self.target_vel = self.target_spd * cos_sin_array(self.target_dir)
         self.target_rad = 0.0045
+        self.target_id = 0.0
         self.target_rew = 0
 
         self.config = config
@@ -128,7 +129,12 @@ class PnCGame:
         target_rew=None,
         mouse_gain=None,
         mouse_ori=None,
+        cpi=None,
+        mouse_rotation_gain_x=None,
+        mouse_rotation_gain_y=None,
+        mouse_plan_correction=None,
         max_target_pos_sample=100,
+        max_target_geometry_sample=10000,
         return_reset_condition=True,
         **kwargs
     ):
@@ -142,6 +148,14 @@ class PnCGame:
 
         self.hand_pos = np.zeros(2) if hand_pos is None else np.array(hand_pos)
         self.hand_vel = np.zeros(2) if hand_vel is None else np.array(hand_vel)
+        if cpi is not None:
+            self.cpi = float(cpi)
+        if mouse_rotation_gain_x is not None:
+            self.mouse_rotation_gain_x = float(mouse_rotation_gain_x)
+        if mouse_rotation_gain_y is not None:
+            self.mouse_rotation_gain_y = float(mouse_rotation_gain_y)
+        if mouse_plan_correction is not None:
+            self.mouse_plan_correction = float(mouse_plan_correction)
         self.mouse_ori = (
             self._sample_initial_mouse_orientation()
             if mouse_ori is None
@@ -159,8 +173,12 @@ class PnCGame:
         # Target task difficulty
         if target_rad is None and target_pos is None:
             if self.target_id_uniform_sample:
-                while True:
-                    task_id = np.random.uniform(*self.target_id_range)
+                # Keep the sampled Fitts ID fixed while rejecting geometry.
+                # Resampling ID here biases the realized ID distribution.
+                task_id = float(np.random.uniform(*self.target_id_range))
+                for _ in range(max_target_geometry_sample):
+                    if cursor_pos is None:
+                        self.cursor_pos = np.random.uniform(-self.window_qt, self.window_qt)
                     target_pos = np.random.uniform(-self.window_qt, self.window_qt)
                     target_dist = np.linalg.norm(target_pos - self.cursor_pos)
                     target_rad = target_dist / (2**task_id - 1) / 2
@@ -174,6 +192,12 @@ class PnCGame:
                         np.all(target_pos <= self.window_qt - target_rad) and \
                             target_dist >= target_rad:
                         break
+                else:
+                    raise RuntimeError(
+                        "Could not sample valid cursor/target geometry while "
+                        f"preserving Fitts ID={task_id:.6f} after "
+                        f"{max_target_geometry_sample} attempts."
+                    )
                 self.target_pos = target_pos
                 self.target_rad = target_rad
             else:
@@ -192,6 +216,8 @@ class PnCGame:
                     if np.linalg.norm(target_pos - self.cursor_pos) >= self.target_min_dist_to_cursor: break
                 self.target_pos = target_pos
 
+        target_dist = np.linalg.norm(self.target_pos - self.cursor_pos)
+        self.target_id = float(np.log2(target_dist / (2 * self.target_rad) + 1))
         self.target_rew = np.random.choice(TARGET_SCORE) if target_rew is None else target_rew
 
         if mouse_gain is not None: self.mouse_gain = mouse_gain
@@ -209,11 +235,15 @@ class PnCGame:
                 target_spd = self.target_spd,
                 target_dir = self.target_dir,
                 target_rad = self.target_rad,
+                target_id = self.target_id,
                 target_rew = self.target_rew,
                 mouse_gain = self.mouse_gain,
                 effective_mouse_gain = self.cursor_gain,
                 cpi = self.cpi,
                 mouse_ori = self.mouse_ori,
+                mouse_rotation_gain_x = self.mouse_rotation_gain_x,
+                mouse_rotation_gain_y = self.mouse_rotation_gain_y,
+                mouse_plan_correction = self.mouse_plan_correction,
             ))
 
 
@@ -260,6 +290,71 @@ class PnCGame:
             return_mouse_ori=True,
             return_count_residual=True,
         )
+
+
+    def get_sensor_count_deltas(
+        self,
+        htraj_p,
+        *,
+        mouse_ori=None,
+        count_residual=None,
+    ):
+        """Return the exact quantized ``dx/dy`` counts for a hand trajectory.
+
+        This uses the same mapping, rotation parameters, CPI quantization, and
+        residual-carry convention as ``get_cursor_and_hand_update``.  Counts
+        are kept separate from cursor clipping so they match physical raw-input
+        packets even when the pointer reaches a screen boundary.
+        """
+
+        hand_deltas = np.diff(np.asarray(htraj_p, dtype=float), axis=0)
+        if hand_deltas.ndim != 2 or hand_deltas.shape[1] != 2:
+            raise ValueError("htraj_p must have shape (n_samples, 2)")
+        if len(hand_deltas) == 0:
+            return np.empty((0, 2), dtype=np.int64)
+
+        initial_orientation = (
+            self.mouse_ori if mouse_ori is None else float(mouse_ori)
+        )
+        initial_residual = (
+            np.asarray(self.mouse_count_residual, dtype=float)
+            if count_residual is None
+            else np.asarray(count_residual, dtype=float)
+        )
+
+        if self.mouse_mapping == "rotational":
+            sensor_displacements, _, _ = (
+                Mouse.get_cursor_displacements_from_desk_rotation(
+                    hand_deltas,
+                    1.0,
+                    initial_orientation,
+                    self.mouse_rotation_gain_x,
+                    self.mouse_rotation_gain_y,
+                    mouse_cpi=self.cpi,
+                    count_residual=initial_residual,
+                    return_count_residual=True,
+                )
+            )
+            return np.rint(
+                sensor_displacements * self.cpi / INCH_TO_METERS
+            ).astype(np.int64)
+
+        if self.mouse_mapping == "linear":
+            cumulative_raw = (
+                np.cumsum(hand_deltas * self.cpi / INCH_TO_METERS, axis=0)
+                + initial_residual[np.newaxis, :]
+            )
+            cumulative_quantized = np.rint(cumulative_raw)
+            previous_quantized = np.concatenate(
+                (
+                    np.zeros_like(cumulative_quantized[:1]),
+                    cumulative_quantized[:-1],
+                ),
+                axis=0,
+            )
+            return (cumulative_quantized - previous_quantized).astype(np.int64)
+
+        raise ValueError(f"Unknown mouse_mapping: {self.mouse_mapping}")
 
 
 
@@ -599,7 +694,8 @@ class PnCGame:
         return np.linalg.norm(self.cursor_pos - self.target_pos)
 
     
-    def sample_task_conditions(self, n, fix_cond_list=list(), **cond):
+    def sample_task_conditions(self, n, fix_cond_list=None, **cond):
+        fix_cond_list = [] if fix_cond_list is None else list(fix_cond_list)
         if not len(fix_cond_list):
             return [self.reset(return_reset_condition=True, **cond) for _ in range(n)]
         

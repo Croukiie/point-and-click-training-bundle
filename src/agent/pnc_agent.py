@@ -32,7 +32,7 @@ class PnCEnvDefault(gym.Env):
     def __init__(
         self,
         spec_name: str="pnc-base",
-        agent_name: str="default",
+        agent_name: str="classic",
         pnc_env_name: str="default",
         interval_name: str="default",
         agent_cfg=None,
@@ -171,17 +171,21 @@ class PnCEnvDefault(gym.Env):
         return [seed]
     
 
-    def update_task_setting(self, pnc_env_setting=dict()):
-        self.pnc_env_setting.update(pnc_env_setting)
+    def update_task_setting(self, pnc_env_setting=None):
+        if pnc_env_setting:
+            self.pnc_env_setting.update(pnc_env_setting)
 
-    def update_user_status(self, user_stat_setting=dict()):
-        self.user_status_setting.update(user_stat_setting)
+    def update_user_status(self, user_stat_setting=None):
+        if user_stat_setting:
+            self.user_status_setting.update(user_stat_setting)
     
 
     def np_cstate(self):
         param_z = np.array([self.param_mod_z[v] for v in self.user.param_modul.list])
         obs = np.concatenate([np.atleast_1d(self.cstate[key]) for key in self.user.observation.list])
-        obs = linear_normalize(obs, *self.observation_range.T, clip=False)
+        # The Gym observation space is declared as [-1, 1]. Perceptual noise
+        # can otherwise push elapsed time or velocity outside that contract.
+        obs = linear_normalize(obs, *self.observation_range.T, clip=True)
         return np.concatenate((param_z, obs)).astype(np.float32)
     
 
@@ -311,6 +315,11 @@ class PnCEnvDefault(gym.Env):
         seed=None, 
         sample_min_prob=0.0,
     ):
+        super().reset(seed=seed)
+        # The legacy model uses NumPy's module-level RNG throughout. Seed it in
+        # each subprocess until all samplers are migrated to self.np_random.
+        if seed is not None:
+            np.random.seed(seed)
         if self.sample_mod_z:
             self.sample_z(sample_min_prob)
         self.update_params()
@@ -622,8 +631,22 @@ class PnCEnvDefault(gym.Env):
         else:
             self.cstate["elapsed_time"] = prev_time_hat + state.elapsed_time_step / 1000
 
-        # Update motor effort cumsum
-        state.motor_effort = Motor.accel_sum(self.ongoing_mp_actual["v"])
+        # Charge only the executed part of the motor plan. A click may occur
+        # between two 100 ms decision boundaries; charging the full bump made
+        # early terminal clicks artificially expensive.
+        executed_ms = (
+            int(state.elapsed_time_step) if state.done else int(self.intv.bump)
+        )
+        _, executed_velocity = Motor.interpolate_plan(
+            self.ongoing_mp_actual["p"],
+            self.ongoing_mp_actual["v"],
+            self.intv.muscle,
+            self.intv.interp,
+        )
+        executed_velocity = executed_velocity[
+            : int(np.ceil(executed_ms / self.intv.interp)) + 1
+        ]
+        state.motor_effort = Motor.accel_sum(executed_velocity)
         self.motor_effort += state.motor_effort
 
         # Update plan

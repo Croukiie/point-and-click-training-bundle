@@ -14,8 +14,8 @@ import pandas as pd
 from box import Box
 from tqdm import tqdm
 import copy
-from datetime import datetime
 import glob, gc
+import hashlib
 
 from ..config.config import INF
 from ..config.constant import FOLDER, FIELD
@@ -26,19 +26,29 @@ from ..utils.mymath import linear_denormalize, linear_normalize, log_denormalize
 DIR_TO_DATA = Path(__file__).parent.parent.parent
 
 
+def _spawn_worker_seeds(count: int) -> np.ndarray:
+    return np.random.randint(
+        0, np.iinfo(np.uint32).max, size=count, dtype=np.uint32
+    )
+
+
+def _seed_digest(seeds: np.ndarray) -> str:
+    return hashlib.sha256(np.asarray(seeds, dtype=np.uint32).tobytes()).hexdigest()
+
+
 class PnCSimulatorForAmortizer:
     def __init__(self, model_name, ckpt, downsample_rate, simulation_option,
-                 fix_per_param=list(), task_cond=dict(), user_stat_cond=dict()):
+                 fix_per_param=None, task_cond=None, user_stat_cond=None):
         self.simulator = PnCSimulator(model_name=model_name, ckpt=ckpt, simul_option_name=simulation_option)
         self.user_target_param, self.simul_target_param, self.param_range = self.simulator.modulated_param_list()
         self.total_target_param = self.user_target_param + self.simul_target_param
 
         # Trajectory data downsampling rate
         self.downsample_rate = downsample_rate
-        self.task_cond = task_cond
-        self.user_stat_cond = user_stat_cond
+        self.task_cond = {} if task_cond is None else dict(task_cond)
+        self.user_stat_cond = {} if user_stat_cond is None else dict(user_stat_cond)
         self.game = copy.deepcopy(self.simulator.env.pnc_env)
-        self.fixed_condition_per_param = fix_per_param
+        self.fixed_condition_per_param = [] if fix_per_param is None else list(fix_per_param)
 
 
 
@@ -58,13 +68,10 @@ class PnCSimulatorForAmortizer:
             simul_z = simul_param_z[i]
             self.simulator.fix_user_param(param_z=dict(zip(self.user_target_param, user_z)))
             self.simulator.fix_simul_param(param_z=dict(zip(self.simul_target_param, simul_z)))
-            task_list = self.game.sample_task_conditions(sim_per_param, 
-                                                         fix_cond_list=self.fixed_condition_per_param, 
-                                                         **self.task_cond)
-            user_stat_list = self.simulator.sample_user_stat_conditions(sim_per_param, **self.user_stat_cond)
-            self.simulator.simulate(task_list=task_list, user_stat_list=user_stat_list, verbose=False)
-            stat_result, traj_result = self.simulator.get_simulation_result(return_traj=True, downsample=self.downsample_rate)
-            self.simulator.clear_simulation()
+            stat_result, traj_result, _ = self._simulate_completed_trials(
+                sim_per_param,
+                context=f"parameter set {i}",
+            )
 
             stats.append(stat_result)   # pd.DataFrame
             trajs.append(traj_result)   # list of pd.DataFrame
@@ -76,6 +83,83 @@ class PnCSimulatorForAmortizer:
         )
 
     
+    def _simulate_completed_trials(
+        self,
+        requested_trials,
+        max_attempts_per_trial=50,
+        context="parameter set",
+    ):
+        """Collect click-terminated trials using fresh conditions after timeouts.
+
+        Replaying a truncated condition is ineffective because policy inference
+        is deterministic and the sampled task/user state is fixed. Keep the
+        participant parameters fixed, but replace each timeout with a newly
+        sampled task and user state.
+        """
+        requested_trials = int(requested_trials)
+        if requested_trials <= 0:
+            raise ValueError("requested_trials must be positive")
+        max_attempts = requested_trials * int(max_attempts_per_trial)
+        accepted_stats = []
+        accepted_trajs = []
+        accepted = 0
+        attempted = 0
+        retry_task_cond = dict(self.task_cond)
+        first_batch = True
+
+        while accepted < requested_trials and attempted < max_attempts:
+            batch_size = min(requested_trials - accepted, max_attempts - attempted)
+            task_list = self.game.sample_task_conditions(
+                batch_size,
+                fix_cond_list=(self.fixed_condition_per_param if first_batch else []),
+                **retry_task_cond,
+            )
+            if first_batch and task_list:
+                for key in self.fixed_condition_per_param:
+                    retry_task_cond[key] = task_list[0][key]
+            first_batch = False
+            user_stat_list = self.simulator.sample_user_stat_conditions(
+                batch_size,
+                **self.user_stat_cond,
+            )
+            try:
+                self.simulator.simulate(
+                    task_list=task_list,
+                    user_stat_list=user_stat_list,
+                    resimulate_max_num=0,
+                    verbose=False,
+                )
+                stat_result, traj_result = self.simulator.get_simulation_result(
+                    return_traj=True,
+                    downsample=self.downsample_rate,
+                )
+            finally:
+                self.simulator.clear_simulation()
+
+            attempted += batch_size
+            complete_indices = np.flatnonzero(
+                ~stat_result[FIELD.TRUNC].to_numpy(dtype=bool)
+            )
+            take = complete_indices[: requested_trials - accepted]
+            if len(take):
+                accepted_stats.append(stat_result.iloc[take].copy())
+                accepted_trajs.extend(traj_result[index] for index in take)
+                accepted += len(take)
+
+        if accepted != requested_trials:
+            rate = accepted / attempted if attempted else 0.0
+            raise RuntimeError(
+                f"Only {accepted}/{requested_trials} completed-click trials "
+                f"were obtained for {context} after {attempted} fresh task "
+                f"attempts (acceptance={rate:.3%})."
+            )
+
+        return (
+            pd.concat(accepted_stats, ignore_index=True),
+            accepted_trajs,
+            attempted,
+        )
+
     def convert_param_z_to_w(self, outputs):
         param_in = copy.deepcopy(outputs)
         if len(np.array(param_in).shape) == 1:
@@ -173,7 +257,15 @@ class PnCAmortizerTrainingDataset(object):
 
         param, stat, traj = list(), list(), list()
 
-        datafilelist.sort()
+        datafilelist.sort(key=os.path.getmtime)
+        if len(datafilelist) > 1:
+            if verbose:
+                print(
+                    f"Warning: {len(datafilelist)} matching training datasets "
+                    f"were found; using only the newest: {datafilelist[-1]}",
+                    flush=True,
+                )
+            datafilelist = datafilelist[-1:]
         incompatible_data = 0
         for f in datafilelist if not verbose else tqdm(datafilelist, desc="Processing training data simulations ... "):
             data_feat_order = load_config(f.replace('.npz', '.yaml'))
@@ -255,9 +347,10 @@ class PnCAmortizerTrainingDataset(object):
     def _generate_raw_dataset(self, n_param=2**14, repeat=1, num_cpu=None):
         # Settings
         num_cpu = psutil.cpu_count(logical=False) if num_cpu is None else min(num_cpu, psutil.cpu_count(logical=False))
+        self.simulator.simulator._ensure_policy_loaded()
 
-        def get_simul_res(simulator: PnCSimulatorForAmortizer, i):
-            np.random.seed(datetime.now().microsecond + i)
+        def get_simul_res(simulator: PnCSimulatorForAmortizer, seed):
+            np.random.seed(int(seed))
             result = simulator.simulate(
                 n_param=1,
                 sim_per_param=self.num_of_epsiode_per_param,
@@ -266,6 +359,7 @@ class PnCAmortizerTrainingDataset(object):
             return result   # Normalized parameter, summary (nested list of pd.DataFrame), trajectory (nested list of pd.DataFrame)
 
         for _ in range(repeat):
+            worker_seeds = _spawn_worker_seeds(n_param)
             num_of_sim = n_param * self.num_of_epsiode_per_param
             filename = "_".join([
                 "tr", 
@@ -276,13 +370,18 @@ class PnCAmortizerTrainingDataset(object):
             ])
             filepath = f"{self.data_path}/{filename}"
 
-            eps = Parallel(n_jobs=num_cpu)(delayed(get_simul_res)(self.simulator, i) for i in tqdm(range(n_param)))
+            eps = Parallel(n_jobs=num_cpu)(
+                delayed(get_simul_res)(self.simulator, worker_seeds[i])
+                for i in tqdm(range(n_param))
+            )
 
             # Save column
             column_info = dict(
                 stat = list(eps[0][1][0].columns),
                 traj = list(eps[0][2][0][0].columns),
-                fixed_cond = list(self.simulator.fixed_condition_per_param)
+                fixed_cond = list(self.simulator.fixed_condition_per_param),
+                schema_version = 2,
+                worker_seed_sha256 = _seed_digest(worker_seeds),
             )
             save_dict_to_yaml(column_info, f"{filepath}.yaml")
 
@@ -308,7 +407,11 @@ class PnCAmortizerTrainingDataset(object):
             sim_per_param = self.num_of_epsiode_per_param
 
         indices = np.random.choice(self.n_param, batch_sz, replace=batch_sz > self.n_param)
-        ep_indices = np.random.choice(self.num_of_epsiode_per_param, sim_per_param)
+        ep_indices = np.random.choice(
+            self.num_of_epsiode_per_param,
+            sim_per_param,
+            replace=sim_per_param > self.num_of_epsiode_per_param,
+        )
         rows = np.repeat(indices, sim_per_param).reshape((-1, sim_per_param))
         cols = np.tile(ep_indices, (batch_sz, 1))
         
@@ -394,7 +497,7 @@ class PnCAmortizerValidationDataset(object):
         if not len(datafilelist):
             raise FileNotFoundError("No data file found for validation ... generate the dataset first.")
         
-        datafilelist.sort()
+        datafilelist.sort(key=os.path.getmtime, reverse=True)
         incompatible_data = 0
         for f in datafilelist:
         # Feature order
@@ -465,9 +568,10 @@ class PnCAmortizerValidationDataset(object):
     def _generate_raw_dataset(self, num_cpu=None):
         # Settings
         num_cpu = psutil.cpu_count(logical=False) if num_cpu is None else min(num_cpu, psutil.cpu_count(logical=False))
+        self.simulator.simulator._ensure_policy_loaded()
 
-        def get_simul_res(simulator: PnCSimulatorForAmortizer, i):
-            np.random.seed(datetime.now().microsecond + i)
+        def get_simul_res(simulator: PnCSimulatorForAmortizer, seed):
+            np.random.seed(int(seed))
             result = simulator.simulate(
                 n_param=1,
                 sim_per_param=self.trial_per_user,
@@ -475,8 +579,10 @@ class PnCAmortizerValidationDataset(object):
             )
             return result   # Normalized parameter, summary (nested list of pd.DataFrame), trajectory (nested list of pd.DataFrame)
 
+        worker_seeds = _spawn_worker_seeds(self.total_user)
         eps = Parallel(n_jobs=num_cpu)(
-            delayed(get_simul_res)(self.simulator, i) for i in tqdm(range(self.total_user))
+            delayed(get_simul_res)(self.simulator, worker_seeds[i])
+            for i in tqdm(range(self.total_user))
         )
 
         filepath = os.path.join(
@@ -488,7 +594,9 @@ class PnCAmortizerValidationDataset(object):
         column_info = dict(
             stat = list(eps[0][1][0].columns),
             traj = list(eps[0][2][0][0].columns),
-            fixed_cond = list(self.simulator.fixed_condition_per_param)
+            fixed_cond = list(self.simulator.fixed_condition_per_param),
+            schema_version = 2,
+            worker_seed_sha256 = _seed_digest(worker_seeds),
         )
         save_dict_to_yaml(column_info, f"{filepath}.yaml")
 
@@ -521,7 +629,11 @@ class PnCAmortizerValidationDataset(object):
                 stats = self.dataset["stat_data"][user][:n_trial]
                 trajs = self.dataset["traj_data"][user][:n_trial] if self.dataset["traj_data"] is not None else [None] * n_trial
             else:
-                sample_indices = np.random.choice(np.arange(self.trial_per_user), size=n_trial, replace=False)
+                sample_indices = np.random.choice(
+                    np.arange(self.trial_per_user),
+                    size=n_trial,
+                    replace=n_trial > self.trial_per_user,
+                )
                 stats = self.dataset["stat_data"][user][sample_indices]
                 trajs = self.dataset["traj_data"][user][sample_indices] if self.dataset["traj_data"] is not None else [None] * n_trial
             

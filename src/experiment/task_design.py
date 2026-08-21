@@ -31,6 +31,8 @@ def make_trial_templates(
     id_range: tuple[float, float],
     seed: int,
     cursor_position_m: tuple[float, float] | None = None,
+    target_radius_range_m: tuple[float, float] = (0.00125, 0.007),
+    max_geometry_attempts: int = 100_000,
 ) -> list[TrialTemplate]:
     """Reproduce the fixed-target sampling rule used by ``PnCGame.reset``.
 
@@ -39,23 +41,37 @@ def make_trial_templates(
     rng = np.random.default_rng(seed)
     half_window = np.asarray(virtual_size_m, dtype=np.float64) / 2.0
     templates: list[TrialTemplate] = []
+    radius_min, radius_max = map(float, target_radius_range_m)
+    if not (0.0 < radius_min <= radius_max):
+        raise ValueError("target_radius_range_m must be positive and ordered")
 
     for template_id in range(count):
-        cursor = (
-            rng.uniform(-half_window, half_window)
-            if cursor_position_m is None
-            else np.asarray(cursor_position_m, dtype=np.float64)
-        )
-        while True:
-            fitts_id = float(rng.uniform(*id_range))
+        # Sample ID once. Re-drawing ID after a rejected geometry biases the
+        # realized distribution because difficult IDs are rejected more often.
+        sampled_id = float(rng.uniform(*id_range))
+        for _ in range(max_geometry_attempts):
+            cursor = (
+                rng.uniform(-half_window, half_window)
+                if cursor_position_m is None
+                else np.asarray(cursor_position_m, dtype=np.float64)
+            )
             target = rng.uniform(-half_window, half_window)
             distance = float(np.linalg.norm(target - cursor))
-            radius = distance / (2.0**fitts_id - 1.0) / 2.0
+            radius = distance / (2.0**sampled_id - 1.0) / 2.0
             fits = np.all(target >= -half_window + radius) and np.all(
                 target <= half_window - radius
             )
-            if fits and distance >= radius:
+            if (
+                fits
+                and distance >= radius
+                and radius_min <= radius <= radius_max
+            ):
                 break
+        else:
+            raise RuntimeError(
+                "Could not sample valid target geometry while preserving "
+                f"Fitts ID={sampled_id:.6g} after {max_geometry_attempts} attempts"
+            )
 
         templates.append(
             TrialTemplate(
@@ -66,7 +82,7 @@ def make_trial_templates(
                 target_y_m=float(target[1]),
                 target_radius_m=float(radius),
                 target_distance_m=float(distance),
-                fitts_id=float(fitts_id),
+                fitts_id=sampled_id,
             )
         )
     return templates
@@ -121,24 +137,20 @@ def make_trial_stage_template(
     """Build the start or task stage consistently for native and web clients."""
     cursor = np.asarray(cursor_position_m, dtype=np.float64)
     if trial_stage == "start":
-        target = np.zeros(2, dtype=np.float64)
+        # The start target places the virtual cursor at the exact cursor
+        # sampled together with this task, so task distance, radius and ID are
+        # identical to the simulator rather than being recomputed or clamped.
+        target = np.array(
+            [base_template.cursor_x_m, base_template.cursor_y_m],
+            dtype=np.float64,
+        )
         radius = float(start_target_radius_m)
     elif trial_stage == "task":
         target = np.array(
             [base_template.target_x_m, base_template.target_y_m],
             dtype=np.float64,
         )
-        distance = float(np.linalg.norm(target - cursor))
-        radius = (
-            float(base_template.target_radius_m)
-            if distance <= 0
-            else distance / (2.0**float(base_template.fitts_id) - 1.0) / 2.0
-        )
-        half_window = np.asarray(virtual_size_m, dtype=np.float64) / 2.0
-        max_radius = float(
-            np.min(np.minimum(target + half_window, half_window - target))
-        )
-        radius = max(1e-4, min(radius, max_radius))
+        radius = float(base_template.target_radius_m)
     else:
         raise ValueError(f"Unknown trial stage: {trial_stage}")
 

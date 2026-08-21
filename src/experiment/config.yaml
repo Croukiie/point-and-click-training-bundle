@@ -1,10 +1,13 @@
 experiment:
   name: pnc_cpi_study
+  protocol_version: simulator_geometry_exact_v3
   refresh_hz: 240
   timeout_s: 3.0
   inter_trial_s: 0.30
   feedback_s: 0.0
-  start_target_enabled: false
+  # Required for exact simulator geometry: the start target moves the virtual
+  # cursor to the cursor position sampled jointly with the task target.
+  start_target_enabled: true
   start_target_radius_m: 0.006
   practice_trials_per_cpi: 15
   measured_trials_per_cpi: 128
@@ -14,6 +17,7 @@ experiment:
   mouse_gain: 4.357877685367455
   mouse_reference_cpi: 400
   target_id_range: [2.5, 7.2]
+  target_radius_range_m: [0.00125, 0.007]
   seed: 20260708
 
 display:

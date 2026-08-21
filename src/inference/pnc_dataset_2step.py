@@ -15,8 +15,8 @@ import pandas as pd
 from box import Box
 from tqdm import tqdm
 import copy
-from datetime import datetime
 import glob, gc
+import hashlib
 
 from ..config.config import INF
 from ..config.constant import FOLDER, FIELD
@@ -28,10 +28,21 @@ from ..inference.pnc_dataset import PnCSimulatorForAmortizer, PnCAmortizerTraini
 DIR_TO_DATA = Path(__file__).parent.parent.parent
 
 
+def _spawn_worker_seeds(count: int) -> np.ndarray:
+    """Create deterministic worker seeds from the caller's seeded RNG state."""
+    return np.random.randint(
+        0, np.iinfo(np.uint32).max, size=count, dtype=np.uint32
+    )
+
+
+def _seed_digest(seeds: np.ndarray) -> str:
+    return hashlib.sha256(np.asarray(seeds, dtype=np.uint32).tobytes()).hexdigest()
+
+
 class PnCSimulatorForConditionalAmortizer(PnCSimulatorForAmortizer):
     def __init__(self, model_name, ckpt, downsample_rate, simulation_option, 
                  main_param_list, sub_param_list,
-                 fix_per_param=list(), task_cond=dict(), user_stat_cond=dict()):
+                 fix_per_param=None, task_cond=None, user_stat_cond=None):
         super().__init__(
             model_name=model_name,
             ckpt=ckpt,
@@ -89,27 +100,26 @@ class PnCSimulatorForConditionalAmortizer(PnCSimulatorForAmortizer):
                 raise ValueError(f"{param} is not included in parameter set. Possibly configuration error.")
 
         # Not modified below
-        stats, trajs = list(), list()
+        stats, trajs, completion_attempts = list(), list(), list()
         for i in (tqdm(range(n_param)) if verbose else range(n_param)):
             user_z = user_param_z[i]
             simul_z = simul_param_z[i]
             self.simulator.fix_user_param(param_z=dict(zip(self.user_target_param, user_z)))
             self.simulator.fix_simul_param(param_z=dict(zip(self.simul_target_param, simul_z)))
-            task_list = self.game.sample_task_conditions(sim_per_param_set, 
-                                                         fix_cond_list=self.fixed_condition_per_param, 
-                                                         **self.task_cond)
-            user_stat_list = self.simulator.sample_user_stat_conditions(sim_per_param_set, **self.user_stat_cond)
-            self.simulator.simulate(task_list=task_list, user_stat_list=user_stat_list, verbose=False)
-            stat_result, traj_result = self.simulator.get_simulation_result(return_traj=True, downsample=self.downsample_rate)
-            self.simulator.clear_simulation()
+            stat_result, traj_result, attempt_count = self._simulate_completed_trials(
+                sim_per_param_set,
+                context=f"shared parameter set {i}",
+            )
 
             stats.append(stat_result)   # pd.DataFrame
             trajs.append(traj_result)   # list of pd.DataFrame
+            completion_attempts.append(attempt_count)
         
         return (
             np.concatenate((user_param_z, simul_param_z), axis=1), # np.ndarray with shape (n_param, num of target param)
             stats,   # [pd.df (sim_per_param x n_beh_feat), pd.df, ...] 1D list
-            trajs    # [[pd.df traj 1, ... pd.df traj sim_per_param], [ ... ], ..., [ ... ]] 2D nested list
+            trajs,   # [[pd.df traj 1, ... pd.df traj sim_per_param], [ ... ], ..., [ ... ]] 2D nested list
+            np.asarray(completion_attempts, dtype=np.int64),
         )
 
     def convert_param_z_to_w(self, outputs=None, main_outputs=None, sub_outputs=None):
@@ -202,7 +212,8 @@ class PnCConditionalAmortizerTrainingDataset(PnCAmortizerTrainingDataset):
             str(self.sim_config.ckpt),
             str(self.sim_config.traj_downsample),
             self.sim_config.simul_option,
-            self.param_setting_code
+            self.param_setting_code,
+            str(self.sim_config.get("dataset_contract", "legacy")),
         ])
         self.data_path = os.path.join(DIR_TO_DATA, f"data/{FOLDER.AMORTIZER2}/dataset/", basename)
         os.makedirs(self.data_path, exist_ok=True)
@@ -224,7 +235,15 @@ class PnCConditionalAmortizerTrainingDataset(PnCAmortizerTrainingDataset):
 
         param, stat, traj = list(), list(), list()
 
-        datafilelist.sort()
+        datafilelist.sort(key=os.path.getmtime)
+        if len(datafilelist) > 1:
+            if verbose:
+                print(
+                    f"Warning: {len(datafilelist)} matching training datasets "
+                    f"were found; using only the newest: {datafilelist[-1]}",
+                    flush=True,
+                )
+            datafilelist = datafilelist[-1:]
         incompatible_data = 0
         for f in datafilelist if not verbose else tqdm(
             datafilelist,
@@ -307,9 +326,13 @@ class PnCConditionalAmortizerTrainingDataset(PnCAmortizerTrainingDataset):
     def _generate_raw_dataset(self, n_main_param=1, repeat=1, num_cpu=None):
         # Settings
         num_cpu = psutil.cpu_count(logical=False) if num_cpu is None else min(num_cpu, psutil.cpu_count(logical=False))
+        # Load once on CPU before Joblib serializes worker batches. Inference
+        # remains checkpoint-lazy, while large dataset jobs avoid reloading the
+        # policy for every simulated participant.
+        self.simulator.simulator._ensure_policy_loaded()
 
-        def get_simul_res(simulator: PnCSimulatorForConditionalAmortizer, i):
-            np.random.seed(datetime.now().microsecond + i)
+        def get_simul_res(simulator: PnCSimulatorForConditionalAmortizer, seed):
+            np.random.seed(int(seed))
             result = simulator.simulate(
                 n_main_param=1,
                 n_sub_param=self.num_of_subparam_per_mainparam,
@@ -319,6 +342,7 @@ class PnCConditionalAmortizerTrainingDataset(PnCAmortizerTrainingDataset):
             return result   # Normalized parameter, summary (nested list of pd.DataFrame), trajectory (nested list of pd.DataFrame)
 
         for _ in range(repeat):
+            worker_seeds = _spawn_worker_seeds(n_main_param)
             num_of_sim = n_main_param * self.num_of_subparam_per_mainparam * self.num_of_epsiode_per_param
             filename = "_".join([
                 "tr",
@@ -331,7 +355,7 @@ class PnCConditionalAmortizerTrainingDataset(PnCAmortizerTrainingDataset):
             filepath = f"{self.data_path}/{filename}"
             
             eps = Parallel(n_jobs=num_cpu)(
-                delayed(get_simul_res)(self.simulator, i)
+                delayed(get_simul_res)(self.simulator, worker_seeds[i])
                 for i in tqdm(
                     range(n_main_param),
                     desc="Simulating shared participants",
@@ -345,7 +369,21 @@ class PnCConditionalAmortizerTrainingDataset(PnCAmortizerTrainingDataset):
             column_info = dict(
                 stat = list(eps[0][1][0].columns),
                 traj = list(eps[0][2][0][0].columns),
-                fixed_cond = list(self.simulator.fixed_condition_per_param)
+                fixed_cond = list(self.simulator.fixed_condition_per_param),
+                schema_version = 3,
+                worker_seed_sha256 = _seed_digest(worker_seeds),
+                dataset_contract = str(
+                    self.sim_config.get("dataset_contract", "legacy")
+                ),
+                completion_sampling = "fresh_task_and_user_state_after_timeout",
+                completion_trials_requested = int(num_of_sim),
+                completion_attempts = int(
+                    sum(np.sum(worker[3]) for worker in eps)
+                ),
+            )
+            column_info["completion_acceptance_rate"] = float(
+                column_info["completion_trials_requested"]
+                / column_info["completion_attempts"]
             )
             save_dict_to_yaml(column_info, f"{filepath}.yaml")
 
@@ -374,7 +412,11 @@ class PnCConditionalAmortizerTrainingDataset(PnCAmortizerTrainingDataset):
             
         mp_indices = np.random.choice(self.n_main_param, batch_sz, replace=batch_sz > self.n_main_param)
         sp_indices = np.random.choice(self.num_of_subparam_per_mainparam, subparam_per_mainparam, replace=subparam_per_mainparam > self.num_of_subparam_per_mainparam)
-        ep_indices = np.random.choice(self.num_of_epsiode_per_param, sim_per_param)
+        ep_indices = np.random.choice(
+            self.num_of_epsiode_per_param,
+            sim_per_param,
+            replace=sim_per_param > self.num_of_epsiode_per_param,
+        )
 
         sample_info = dict(
             n_sample_main_param = batch_sz,
@@ -480,7 +522,8 @@ class PnCConditionalAmortizerValidationDataset(PnCAmortizerValidationDataset):
             str(self.sim_config.ckpt),
             str(self.sim_config.traj_downsample),
             self.sim_config.simul_option,
-            self.param_setting_code
+            self.param_setting_code,
+            str(self.sim_config.get("dataset_contract", "legacy")),
         ])
         self.data_path = os.path.join(DIR_TO_DATA, f"data/{FOLDER.AMORTIZER2}/dataset/", basename)
         os.makedirs(self.data_path, exist_ok=True)
@@ -499,7 +542,14 @@ class PnCConditionalAmortizerValidationDataset(PnCAmortizerValidationDataset):
         if not len(datafilelist):
             raise FileNotFoundError("No data file found for validation ... generate the dataset first.")
         
-        datafilelist.sort()
+        datafilelist.sort(key=os.path.getmtime)
+        if len(datafilelist) > 1 and verbose:
+            print(
+                f"Warning: {len(datafilelist)} matching validation datasets "
+                f"were found; using only the newest compatible file.",
+                flush=True,
+            )
+        datafilelist = list(reversed(datafilelist))
         incompatible_data = 0
         for f in datafilelist:
         # Feature order
@@ -566,9 +616,10 @@ class PnCConditionalAmortizerValidationDataset(PnCAmortizerValidationDataset):
     def _generate_raw_dataset(self, num_cpu=None):
         # Settings
         num_cpu = psutil.cpu_count(logical=False) if num_cpu is None else min(num_cpu, psutil.cpu_count(logical=False))
+        self.simulator.simulator._ensure_policy_loaded()
 
-        def get_simul_res(simulator: PnCSimulatorForConditionalAmortizer, i):
-            np.random.seed(datetime.now().microsecond + i)
+        def get_simul_res(simulator: PnCSimulatorForConditionalAmortizer, seed):
+            np.random.seed(int(seed))
             result = simulator.simulate(
                 n_main_param=1,
                 n_sub_param=self.total_cond_per_user,
@@ -577,8 +628,9 @@ class PnCConditionalAmortizerValidationDataset(PnCAmortizerValidationDataset):
             )
             return result   # Normalized parameter, summary (nested list of pd.DataFrame), trajectory (nested list of pd.DataFrame)
 
+        worker_seeds = _spawn_worker_seeds(self.total_user)
         eps = Parallel(n_jobs=num_cpu)(
-            delayed(get_simul_res)(self.simulator, i)
+            delayed(get_simul_res)(self.simulator, worker_seeds[i])
             for i in tqdm(
                 range(self.total_user),
                 desc="Simulating validation participants",
@@ -597,7 +649,25 @@ class PnCConditionalAmortizerValidationDataset(PnCAmortizerValidationDataset):
         column_info = dict(
             stat = list(eps[0][1][0].columns),
             traj = list(eps[0][2][0][0].columns),
-            fixed_cond = list(self.simulator.fixed_condition_per_param)
+            fixed_cond = list(self.simulator.fixed_condition_per_param),
+            schema_version = 3,
+            worker_seed_sha256 = _seed_digest(worker_seeds),
+            dataset_contract = str(
+                self.sim_config.get("dataset_contract", "legacy")
+            ),
+            completion_sampling = "fresh_task_and_user_state_after_timeout",
+            completion_trials_requested = int(
+                self.total_user
+                * self.total_cond_per_user
+                * self.trial_per_user_cond
+            ),
+            completion_attempts = int(
+                sum(np.sum(worker[3]) for worker in eps)
+            ),
+        )
+        column_info["completion_acceptance_rate"] = float(
+            column_info["completion_trials_requested"]
+            / column_info["completion_attempts"]
         )
         save_dict_to_yaml(column_info, f"{filepath}.yaml")
 

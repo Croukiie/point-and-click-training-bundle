@@ -68,10 +68,59 @@ def angle_between(v1, v2, return_in_degree=True):
     return np.degrees(a) if return_in_degree else a
 
 
+def recovery_metrics(true_values, predicted_values):
+    """Return signed and calibration-aware parameter-recovery metrics.
+
+    Squared Pearson correlation alone is not a recovery score: it is high for
+    a perfectly reversed relationship and is insensitive to scale/offset bias.
+    ``r2`` below therefore follows the predictive definition 1 - SSE/SST with
+    the true values as the reference.
+    """
+    true_values = np.asarray(true_values, dtype=float).reshape(-1)
+    predicted_values = np.asarray(predicted_values, dtype=float).reshape(-1)
+    if true_values.size != predicted_values.size:
+        raise ValueError("true_values and predicted_values must have equal length")
+    valid = np.isfinite(true_values) & np.isfinite(predicted_values)
+    true_values = true_values[valid]
+    predicted_values = predicted_values[valid]
+    if true_values.size < 2:
+        return {
+            "r2": float("nan"), "pearson_r": float("nan"),
+            "slope": float("nan"), "intercept": float("nan"),
+            "mae": float("nan"), "rmse": float("nan"),
+        }
+
+    residual = predicted_values - true_values
+    denominator = np.sum((true_values - np.mean(true_values)) ** 2)
+    numerator = np.sum(residual ** 2)
+    r2 = (
+        1.0 - numerator / denominator
+        if denominator > 0
+        else (1.0 if numerator == 0 else float("nan"))
+    )
+    if denominator == 0:
+        return {
+            "r2": float(r2),
+            "pearson_r": float("nan"),
+            "slope": float("nan"),
+            "intercept": float(np.mean(predicted_values)),
+            "mae": float(np.mean(np.abs(residual))),
+            "rmse": float(np.sqrt(np.mean(residual ** 2))),
+        }
+    regression = stats.linregress(true_values, predicted_values)
+    return {
+        "r2": float(r2),
+        "pearson_r": float(regression.rvalue),
+        "slope": float(regression.slope),
+        "intercept": float(regression.intercept),
+        "mae": float(np.mean(np.abs(residual))),
+        "rmse": float(np.sqrt(np.mean(residual ** 2))),
+    }
+
+
 def get_r_squared(x, y):
-    slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
-    r_squared = r_value ** 2
-    return r_squared
+    """Predictive R² for ground truth ``x`` and predictions ``y``."""
+    return recovery_metrics(x, y)["r2"]
 
 
 def np_interp_nd(x, xp, fp):

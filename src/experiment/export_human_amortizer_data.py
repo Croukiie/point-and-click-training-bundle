@@ -24,6 +24,12 @@ from ..utils.trajectory_features import (
     CURVATURE_FEATURE_NAMES,
     cursor_curvature_features,
 )
+from ..utils.trajectory_preprocessing import resample_movement
+from ..utils.raw_count_features import (
+    RAW_COUNT_BIN_HZ,
+    RAW_COUNT_FEATURE_NAMES,
+    count_event_summary_features,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +47,7 @@ AMORTIZER_FEATURES = (
     "target_distance",
     "traverse_length",
     "max_cursor_speed",
+    *RAW_COUNT_FEATURE_NAMES,
     *CURVATURE_FEATURE_NAMES,
 )
 
@@ -168,7 +175,20 @@ def _resample_movement(
     if reaction_time is None:
         return None
 
-    points: list[tuple[float, float, float, float]] = []
+    movement_time = _float(trial.get("movement_time_s"))
+    start_x = _float(trial.get("cursor_start_x_m"))
+    start_y = _float(trial.get("cursor_start_y_m"))
+    click_x = _float(trial.get("click_x_m"))
+    click_y = _float(trial.get("click_y_m"))
+    if (
+        movement_time is None
+        or movement_time <= 0
+        or None in (start_x, start_y, click_x, click_y)
+    ):
+        return None
+
+    points: list[tuple[float, float, float]] = []
+    positive_intervals = []
     for row in raw_rows:
         onset_ns = _float(row.get("time_from_onset_ns"))
         x = _float(row.get("cursor_x_m"))
@@ -176,32 +196,50 @@ def _resample_movement(
         if onset_ns is None or x is None or y is None:
             continue
         onset_s = onset_ns / 1e9
-        if onset_s + 1e-12 < reaction_time:
+        relative_s = onset_s - reaction_time
+        if relative_s < -1e-12 or relative_s > movement_time + 1e-9:
             continue
-        points.append((onset_s - reaction_time, x, y, onset_s))
+        dt_ns = _float(row.get("dt_ns"))
+        if dt_ns is not None and dt_ns > 0:
+            positive_intervals.append(dt_ns / 1e9)
+        points.append((relative_s, x, y))
 
-    if len(points) < 2:
-        return None
     points.sort(key=lambda item: item[0])
+    # The first WM_INPUT event already contains the first displacement but is
+    # also the event used to define reaction time. Preserve the true cursor
+    # start at t=0 and place that first displaced point one polling interval
+    # later instead of dropping the first path segment.
+    polling_interval = (
+        float(np.median(positive_intervals))
+        if positive_intervals
+        else 0.001
+    )
+    polling_interval = min(max(polling_interval, 1e-6), movement_time / 2)
+    adjusted = []
+    for relative_s, x, y in points:
+        if relative_s <= 1e-12 and not np.allclose(
+            [x, y], [start_x, start_y], rtol=0.0, atol=1e-12
+        ):
+            relative_s = polling_interval
+        adjusted.append((relative_s, x, y))
 
-    # WM_INPUT timestamps can occasionally collide.  Keep the last position at
-    # each timestamp so numpy interpolation receives a strictly increasing axis.
-    deduplicated: list[tuple[float, float, float, float]] = []
-    for point in points:
-        if deduplicated and point[0] <= deduplicated[-1][0]:
-            deduplicated[-1] = point
-        else:
-            deduplicated.append(point)
-    if len(deduplicated) < 2 or deduplicated[-1][0] <= 0:
-        return None
+    source_t = np.asarray([item[0] for item in adjusted], dtype=np.float64)
+    source_xy = np.asarray([[item[1], item[2]] for item in adjusted], dtype=np.float64)
+    if source_t.size == 0:
+        source_t = np.array([0.0, movement_time], dtype=np.float64)
+        source_xy = np.array([[start_x, start_y], [click_x, click_y]], dtype=np.float64)
 
-    old_t = np.asarray([item[0] for item in deduplicated], dtype=np.float64)
-    old_x = np.asarray([item[1] for item in deduplicated], dtype=np.float64)
-    old_y = np.asarray([item[2] for item in deduplicated], dtype=np.float64)
-    sample_count = max(2, round(float(old_t[-1]) * trajectory_hz) + 1)
-    new_t = np.linspace(0.0, float(old_t[-1]), sample_count)
-    new_x = np.interp(new_t, old_t, old_x)
-    new_y = np.interp(new_t, old_t, old_y)
+    new_t, positions = resample_movement(
+        source_t,
+        source_xy,
+        movement_start_s=0.0,
+        movement_end_s=movement_time,
+        sampling_hz=trajectory_hz,
+        start_value=[start_x, start_y],
+        end_value=[click_x, click_y],
+    )
+    new_x = positions[:, 0]
+    new_y = positions[:, 1]
     target_x = float(trial["target_x_m"])
     target_y = float(trial["target_y_m"])
 
@@ -231,6 +269,58 @@ def _resample_movement(
     return trajectory, max_cursor_speed
 
 
+def _human_raw_count_features(
+    raw_rows: list[dict[str, str]],
+    trial: dict[str, str],
+    raw_count_hz: int,
+) -> dict[str, float]:
+    """Build CPI-safe fixed-rate summaries from Windows raw ``dx/dy`` counts."""
+
+    reaction_time = _float(trial.get("reaction_time_s"))
+    movement_time = _float(trial.get("movement_time_s"))
+    if reaction_time is None or movement_time is None or movement_time <= 0:
+        raise ValueError("A positive reaction and movement interval is required")
+
+    positive_intervals = [
+        float(dt_ns) / 1e9
+        for row in raw_rows
+        if (dt_ns := _float(row.get("dt_ns"))) is not None and dt_ns > 0
+    ]
+    polling_interval = (
+        float(np.median(positive_intervals))
+        if positive_intervals
+        else 1.0 / raw_count_hz
+    )
+    polling_interval = min(max(polling_interval, 1e-6), movement_time)
+
+    event_times = []
+    count_deltas = []
+    for row in raw_rows:
+        onset_ns = _float(row.get("time_from_onset_ns"))
+        dx = _float(row.get("dx_counts"))
+        dy = _float(row.get("dy_counts"))
+        if onset_ns is None or dx is None or dy is None:
+            continue
+        event_time = onset_ns / 1e9
+        # The first movement-producing WM_INPUT packet is also used to define
+        # reaction time.  Its counts represent the following polling interval,
+        # matching the cursor-trajectory endpoint convention above.
+        if event_time <= reaction_time + 1e-12 and not np.allclose(
+            [dx, dy], [0.0, 0.0], rtol=0.0, atol=0.0
+        ):
+            event_time = reaction_time + polling_interval
+        event_times.append(event_time)
+        count_deltas.append((dx, dy))
+
+    return count_event_summary_features(
+        event_times,
+        count_deltas,
+        movement_start_s=reaction_time,
+        movement_end_s=reaction_time + movement_time,
+        bin_hz=raw_count_hz,
+    )
+
+
 def _amortizer_row(
     trial: dict[str, str],
     *,
@@ -239,6 +329,7 @@ def _amortizer_row(
     hardware: dict[str, Any],
     max_cursor_speed: float,
     trajectory: list[dict[str, float]],
+    raw_count_features: dict[str, float],
 ) -> dict[str, Any]:
     trial_id = str(trial["trial_id"])
     target_x = float(trial["target_x_m"])
@@ -289,6 +380,7 @@ def _amortizer_row(
         "traverse_length": traverse_length,
         "max_cursor_speed": max_cursor_speed,
     }
+    row.update(raw_count_features)
     row.update(curvature_features)
     return row
 
@@ -298,12 +390,15 @@ def export_sessions(
     output_dir: Path,
     *,
     trajectory_hz: float = 20.0,
+    raw_count_hz: int = RAW_COUNT_BIN_HZ,
     include_practice: bool = False,
     allow_unconfirmed_cpi: bool = False,
     protocol_version: str | None = None,
 ) -> dict[str, Any]:
     if trajectory_hz <= 0:
         raise ValueError("trajectory_hz must be positive")
+    if int(raw_count_hz) != raw_count_hz or raw_count_hz <= 0:
+        raise ValueError("raw_count_hz must be a positive integer")
     session_metadata = {
         session_dir: _read_json(session_dir / "session.json")
         for session_dir in _session_dirs(data_root)
@@ -403,6 +498,9 @@ def export_sessions(
                     })
                     continue
                 trajectory, max_cursor_speed = resampled
+                raw_count_features = _human_raw_count_features(
+                    raw_groups[trial_id], trial, raw_count_hz
+                )
                 stat = _amortizer_row(
                     trial,
                     session_id=session_id,
@@ -410,6 +508,7 @@ def export_sessions(
                     hardware=hardware,
                     max_cursor_speed=max_cursor_speed,
                     trajectory=trajectory,
+                    raw_count_features=raw_count_features,
                 )
                 stats_writer.writerow(stat)
                 for sample in trajectory:
@@ -426,7 +525,7 @@ def export_sessions(
                 cpi_counts[int(stat["cpi"])] += 1
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_local": datetime.now().astimezone().isoformat(),
         "source_data_root": str(data_root.resolve()),
         "session_count": len(sessions),
@@ -436,6 +535,9 @@ def export_sessions(
         "exported_trajectory_sample_count": exported_samples,
         "trajectory_hz": trajectory_hz,
         "motion_summary_hz": trajectory_hz,
+        "raw_count_bin_hz": raw_count_hz,
+        "raw_count_features": list(RAW_COUNT_FEATURE_NAMES),
+        "raw_count_units": "integer sensor counts; no CPI-based distance conversion",
         "curvature_source": "resampled_cursor_trajectory",
         "trajectory_reaction_period_removed": True,
         "filters": {
@@ -460,13 +562,14 @@ def export_sessions(
     (output_dir / "README.md").write_text(
         "# Human amortizer export\n\n"
         "`human_amortizer_stats.csv` contains one row per retained trial and the "
-        "21 features used by the curvature amortizer.\n\n"
+        "curvature/path features plus CPI-safe raw-count summaries.\n\n"
         "`human_amortizer_trajectories.csv` contains movement-only trajectories "
         f"resampled at {trajectory_hz:g} Hz. Group rows by `trial_uid` before "
         "passing them to `PnCInferer.process_data`.\n\n"
         "The CPI column is experimental ground truth confirmed at the start of "
         "each block; it is retained for evaluation and must not be passed as an "
-        "amortizer input feature.\n",
+        "amortizer input feature. Raw counts are aggregated at "
+        f"{raw_count_hz:g} Hz and are never converted to metres using CPI.\n",
         encoding="utf-8",
     )
     return manifest
@@ -477,6 +580,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--trajectory-hz", type=float, default=20.0)
+    parser.add_argument("--raw-count-hz", type=int, default=RAW_COUNT_BIN_HZ)
     parser.add_argument("--include-practice", action="store_true")
     parser.add_argument("--allow-unconfirmed-cpi", action="store_true")
     parser.add_argument(
@@ -496,6 +600,7 @@ def main() -> int:
         args.data_root,
         output_dir,
         trajectory_hz=args.trajectory_hz,
+        raw_count_hz=args.raw_count_hz,
         include_practice=args.include_practice,
         allow_unconfirmed_cpi=args.allow_unconfirmed_cpi,
         protocol_version=args.protocol_version,

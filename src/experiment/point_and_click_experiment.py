@@ -266,9 +266,11 @@ class PointAndClickExperiment:
             self.virtual_size,
             tuple(float(v) for v in self.exp["target_id_range"]),
             int(self.exp["seed"]),
-            cursor_position_m=(0.0, 0.0)
-            if bool(self.exp.get("start_target_enabled", False))
-            else None,
+            cursor_position_m=None,
+            target_radius_range_m=tuple(
+                float(v)
+                for v in self.exp.get("target_radius_range_m", (0.00125, 0.007))
+            ),
         )
 
         output_root = Path(args.output_root)
@@ -325,9 +327,10 @@ class PointAndClickExperiment:
                     "starts from the virtual cursor position left by the "
                     "previous trial."
                     if not bool(self.exp.get("start_target_enabled", False))
-                    else "Each logical trial is logged as a center start "
-                    "target followed by the main random target. The virtual "
-                    "cursor position is preserved between stages."
+                    else "Each logical trial is logged as a sampled start "
+                    "target followed by its jointly sampled task target. After "
+                    "a successful start click, the virtual cursor is snapped "
+                    "to the start-target center so simulator geometry is exact."
                 ),
                 "target_onset_timestamp_note": (
                     "perf_counter_ns immediately after display.flip returns; not a photodiode measurement"
@@ -876,6 +879,9 @@ class PointAndClickExperiment:
                         "x_m": float(cursor[0]), "y_m": float(cursor[1]), "success": inside,
                         "input_backend": self.input_backend,
                     })
+                    # A click terminates the trial. Do not accidentally process
+                    # later movement events already present in this drain batch.
+                    break
 
             now_ns = time.perf_counter_ns()
             if (
@@ -1007,8 +1013,24 @@ class PointAndClickExperiment:
             "phase": phase, "trial_stage": trial_stage,
             "input_backend": self.input_backend,
         })
+        next_cursor = cursor.copy()
+        if valid and trial_stage == "start" and outcome == "success":
+            next_cursor = np.array(
+                [template.target_x_m, template.target_y_m], dtype=np.float64
+            )
+            events_log.append({
+                "event": "virtual_cursor_snap",
+                "session_id": self.session_id,
+                "trial_id": trial_id,
+                "timestamp_ns": end_ns,
+                "phase": phase,
+                "trial_stage": trial_stage,
+                "x_m": float(next_cursor[0]),
+                "y_m": float(next_cursor[1]),
+                "input_backend": self.input_backend,
+            })
         logger.submit_trial(summary, raw_rows, frame_rows, events_log)
-        self.current_cursor = cursor.copy()
+        self.current_cursor = next_cursor
         self.current_raw_session_pos = raw_session_pos.copy()
 
         if participant_paused:
@@ -1026,7 +1048,7 @@ class PointAndClickExperiment:
                 self.draw_inter_trial_cursor(cursor)
                 pygame.display.flip()
                 self.clock.tick(120)
-        return TrialRunResult(valid=valid, outcome=outcome, cursor=cursor.copy(), trial_stage=trial_stage)
+        return TrialRunResult(valid=valid, outcome=outcome, cursor=next_cursor.copy(), trial_stage=trial_stage)
 
     def run(self):
         self.initialize_display()
@@ -1162,9 +1184,11 @@ def validate(config: dict[str, Any], participant: str) -> None:
         virtual_size,
         tuple(exp["target_id_range"]),
         int(exp["seed"]),
-        cursor_position_m=(0.0, 0.0)
-        if bool(exp.get("start_target_enabled", False))
-        else None,
+        cursor_position_m=None,
+        target_radius_range_m=tuple(
+            float(v)
+            for v in exp.get("target_radius_range_m", (0.00125, 0.007))
+        ),
     )
     order = counterbalanced_cpi_order(participant, exp["cpi_values"], int(exp["seed"]))
     assert len(templates) == n

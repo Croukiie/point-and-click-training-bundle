@@ -31,7 +31,7 @@ DIR_TO_DATA = Path(__file__).parent.parent.parent
 class PnCSimulatorForTwoLevelConditionalAmortizer(PnCSimulatorForAmortizer):
     def __init__(self, model_name, ckpt, downsample_rate, simulation_option,
                  main_param_list, sub1_param_list, sub2_param_list,
-                 fix_per_param=list(), task_cond=dict(), user_stat_cond=dict()):
+                 fix_per_param=None, task_cond=None, user_stat_cond=None):
         super().__init__(
             model_name=model_name,
             ckpt=ckpt,

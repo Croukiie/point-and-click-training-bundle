@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import random
 from copy import deepcopy
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from box import Box
 
@@ -43,6 +45,7 @@ SHARED_PARAMETERS = (
     "mouse_plan_correction",
 )
 BLOCK_PARAMETERS = ("cpi",)
+DATASET_CONTRACT = "movement_exact20_endpoint_clickonly_v3"
 
 CURVATURE_FEATURES = (
     "cursor_total_abs_turn_rad",
@@ -68,6 +71,9 @@ FEATURE_PROFILES = {
         "cursor_path_excess_ratio",
     ),
 }
+FEATURE_PROFILE_ADDITIONS = {}
+FEATURE_PROFILE_RANGES = {}
+FEATURE_PROFILE_METADATA = {}
 
 
 def parse_checkpoint(value: str):
@@ -94,6 +100,7 @@ def build_simulator_config(
         "fix_per_param": [],
         "main_param": list(SHARED_PARAMETERS),
         "sub_param": list(BLOCK_PARAMETERS),
+        "dataset_contract": DATASET_CONTRACT,
     })
 
 
@@ -108,6 +115,23 @@ def build_data_config(variant: str, feature_profile: str = "full") -> Box:
             f"{', '.join(sorted(missing))}"
         )
     config.stat.list = [feature for feature in config.stat.list if feature not in removed]
+    additions = list(FEATURE_PROFILE_ADDITIONS.get(feature_profile, ()))
+    duplicates = set(additions) & set(config.stat.list)
+    if duplicates:
+        raise ValueError(
+            "Feature profile adds statistics already present: "
+            f"{', '.join(sorted(duplicates))}"
+        )
+    ranges = FEATURE_PROFILE_RANGES.get(feature_profile, {})
+    missing_ranges = set(additions) - set(ranges)
+    if missing_ranges:
+        raise ValueError(
+            "Added statistics are missing normalization ranges: "
+            f"{', '.join(sorted(missing_ranges))}"
+        )
+    config.stat.list.extend(additions)
+    for feature in additions:
+        config.stat.range[feature] = deepcopy(ranges[feature])
     return config
 
 
@@ -168,6 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--save-frequency", type=int, default=10)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--seed", type=int, default=20260819)
     return parser
 
 
@@ -204,6 +229,12 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     validate_args(args)
 
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+
     simulator_config = build_simulator_config(
         args.rl_model,
         args.rl_checkpoint,
@@ -213,11 +244,13 @@ def main(argv=None) -> int:
     training_config = build_training_config(args.device)
 
     removed_features = list(FEATURE_PROFILES[args.feature_profile])
+    added_features = list(FEATURE_PROFILE_ADDITIONS.get(args.feature_profile, ()))
     retained_curvature = [
         feature for feature in CURVATURE_FEATURES if feature not in removed_features
     ]
 
     print("Shared CPI 2-step design", flush=True)
+    print(f"  Random seed: {args.seed}", flush=True)
     print(f"  RL model: {args.rl_model} ({args.rl_checkpoint})", flush=True)
     print(f"  Variant: {args.variant}", flush=True)
     print(f"  Feature profile: {args.feature_profile}", flush=True)
@@ -229,6 +262,11 @@ def main(argv=None) -> int:
     print(
         f"  Retained curvature features ({len(retained_curvature)}): "
         f"{', '.join(retained_curvature)}",
+        flush=True,
+    )
+    print(
+        "  Added summary features: "
+        + (", ".join(added_features) if added_features else "none"),
         flush=True,
     )
     print(f"  Shared parameters ({len(SHARED_PARAMETERS)}): {', '.join(SHARED_PARAMETERS)}", flush=True)
@@ -322,11 +360,22 @@ def main(argv=None) -> int:
             "variant": args.variant,
             "feature_profile": args.feature_profile,
             "removed_summary_features": removed_features,
+            "added_summary_features": added_features,
             "retained_curvature_features": retained_curvature,
             "stat_features": list(data_config.stat.list),
             "trajectory_hz": args.trajectory_downsample,
             "motion_summary_hz": args.trajectory_downsample,
             "comparison_baseline": "independent PnCInferer fit",
+            "random_seed": args.seed,
+            "trajectory_preprocessing": (
+                "crop reaction interval before exact fixed-rate resampling; "
+                "preserve movement start and click endpoint"
+            ),
+            "truncated_trials": "retry up to 50 times, then fail dataset generation",
+            "dataset_contract": DATASET_CONTRACT,
+            "feature_profile_metadata": deepcopy(
+                FEATURE_PROFILE_METADATA.get(args.feature_profile, {})
+            ),
         }
         model_root = (
             ROOT / "data" / "amortizer_cond" / "models" / model_name

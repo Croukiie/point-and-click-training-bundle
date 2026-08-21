@@ -113,6 +113,11 @@ class ImportedHumanResamplingContracts(unittest.TestCase):
         ]
         trial = {
             "reaction_time_s": "0",
+            "movement_time_s": "1",
+            "cursor_start_x_m": "0",
+            "cursor_start_y_m": "0",
+            "click_x_m": "1",
+            "click_y_m": "0",
             "target_x_m": "1",
             "target_y_m": "0",
         }
@@ -128,6 +133,11 @@ class ImportedHumanResamplingContracts(unittest.TestCase):
         ]
         trial = {
             "reaction_time_s": "0.1",
+            "movement_time_s": "0.23",
+            "cursor_start_x_m": "0",
+            "cursor_start_y_m": "0",
+            "click_x_m": "0.2",
+            "click_y_m": "0.1",
             "target_x_m": "0.2",
             "target_y_m": "0.1",
         }
@@ -144,6 +154,11 @@ class ImportedHumanResamplingContracts(unittest.TestCase):
         ]
         trial = {
             "reaction_time_s": "0",
+            "movement_time_s": "1",
+            "cursor_start_x_m": "0.2",
+            "cursor_start_y_m": "-0.1",
+            "click_x_m": "0.2",
+            "click_y_m": "-0.1",
             "target_x_m": "0.2",
             "target_y_m": "-0.1",
         }

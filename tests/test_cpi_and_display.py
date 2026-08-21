@@ -88,6 +88,19 @@ class CpiAndDisplayTests(unittest.TestCase):
         )
         np.testing.assert_allclose(residual, [-0.2, 0.0], atol=1e-12)
 
+    def test_sensor_count_replay_uses_identical_residual_carry(self):
+        game = PnCGame("default")
+        game.cpi = 400
+        game.mouse_mapping = "linear"
+        count_size = physical_meters_per_count(400)
+        hand_positions = np.array(
+            [[0.0, 0.0], [0.4 * count_size, 0.0], [0.8 * count_size, 0.0]]
+        )
+
+        counts = game.get_sensor_count_deltas(hand_positions)
+
+        np.testing.assert_array_equal(counts, [[0, 0], [1, 0]])
+
     def test_virtual_rollout_does_not_commit_sensor_residual(self):
         game = PnCGame("default")
         game.cpi = 400

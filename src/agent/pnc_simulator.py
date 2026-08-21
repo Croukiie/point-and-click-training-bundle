@@ -31,6 +31,12 @@ from ..utils.render import RENDER
 from ..utils.myplot import figure_grid, figure_save
 from ..utils.mymath import linear_normalize, np_interp_nd, cos_sin_array, derivative_central, linear_denormalize
 from ..utils.trajectory_features import cursor_curvature_features
+from ..utils.trajectory_preprocessing import resample_movement
+from ..utils.raw_count_features import (
+    RAW_COUNT_BIN_HZ,
+    RAW_COUNT_FEATURE_NAMES,
+    count_event_summary_features,
+)
 
 
 class PnCEpisodeRecordDefault:
@@ -100,7 +106,11 @@ class PnCEpisodeRecordDefault:
 
     def get_summary_result(self, downsample=None):
         target_vel = self.initial_task_cond["target_spd"] * cos_sin_array(self.initial_task_cond["target_dir"])
-        trajectory = self.get_trajectory_result(downsample=downsample)
+        # Human summary features are defined over first movement -> click. Use
+        # the identical crop-before-resample order in simulation.
+        trajectory = self.get_trajectory_result(
+            downsample=downsample, remove_reaction=True
+        )
         timestamp = trajectory[FIELD.TIMESTAMP].to_numpy(dtype=float)
         cursor_pos = trajectory[
             [FIELD.CURSOR_POS_X, FIELD.CURSOR_POS_Y]
@@ -137,6 +147,25 @@ class PnCEpisodeRecordDefault:
         action_kc = self.actions["kc"].to_numpy().astype(int)
         act_click_indices = np.where((action_kc == 1) | (action_kc == 2))[0]
         action_click = int(action_kc[act_click_indices[0]]) if len(act_click_indices) else 0
+
+        replay_timestamp = (
+            np.arange(self.replay["sensor_counts"].shape[0])
+            * self.intv.interp
+            / 1000
+        )
+        movement_start_s = self.initial_task_cond[FIELD.HAND_RT] / 1000
+        if float(replay_timestamp[-1]) > movement_start_s:
+            raw_count_features = count_event_summary_features(
+                replay_timestamp[1:],
+                self.replay["sensor_counts"][1:],
+                movement_start_s=movement_start_s,
+                movement_end_s=float(replay_timestamp[-1]),
+                bin_hz=RAW_COUNT_BIN_HZ,
+            )
+        else:
+            raw_count_features = {
+                feature: 0.0 for feature in RAW_COUNT_FEATURE_NAMES
+            }
 
         return pd.DataFrame([{
             # Task condition
@@ -183,26 +212,51 @@ class PnCEpisodeRecordDefault:
             FIELD.MOTOR_EFFORT: self.result.motor_effort,
             FIELD.TRUNC: int(self.result.truncated),    # bool -> binary
             **curvature_features,
+            **raw_count_features,
 
             # Simulation related information
             FIELD.ACTION_KC: action_click
         }])
 
-    def get_trajectory_result(self, downsample=None):
+    def get_trajectory_result(self, downsample=None, remove_reaction=False):
         timestamp = np.arange(self.replay["target_pos"].shape[0]) * self.intv.interp / 1000
         target_pos = self.replay["target_pos"]
         cursor_pos = self.replay["cursor_pos"]
         hand_pos = self.replay["hand_pos"]
 
-        if downsample is not None:
-            assert type(downsample) is int
-            timestamp_new = np.linspace(0, timestamp[-1], round(timestamp[-1] * downsample) + 1)
-            target_pos = np_interp_nd(timestamp_new, timestamp, target_pos)
-            cursor_pos = np_interp_nd(timestamp_new, timestamp, cursor_pos)
-            hand_pos = np_interp_nd(timestamp_new, timestamp, hand_pos)
-            timestamp = timestamp_new
-        
-        reaction_flag = np.array(timestamp >= (self.initial_task_cond[FIELD.HAND_RT] / 1000), dtype=int)
+        if downsample is not None or remove_reaction:
+            if downsample is not None and not isinstance(downsample, int):
+                raise TypeError("downsample must be an integer sampling rate")
+            sampling_hz = (
+                int(downsample)
+                if downsample is not None
+                else int(round(1000 / self.intv.interp))
+            )
+            movement_start = (
+                self.initial_task_cond[FIELD.HAND_RT] / 1000
+                if remove_reaction
+                else 0.0
+            )
+            combined = np.column_stack((target_pos, cursor_pos, hand_pos))
+            timestamp, combined = resample_movement(
+                timestamp,
+                combined,
+                movement_start_s=movement_start,
+                movement_end_s=float(timestamp[-1]),
+                sampling_hz=sampling_hz,
+            )
+            target_pos = combined[:, 0:2]
+            cursor_pos = combined[:, 2:4]
+            hand_pos = combined[:, 4:6]
+
+        reaction_flag = (
+            np.ones(len(timestamp), dtype=int)
+            if remove_reaction
+            else np.array(
+                timestamp >= (self.initial_task_cond[FIELD.HAND_RT] / 1000),
+                dtype=int,
+            )
+        )
 
         return pd.DataFrame({
             FIELD.TIMESTAMP: timestamp,
@@ -237,11 +291,40 @@ class PnCEpisodeRecordDefault:
     def replay_and_save(self):
         # keys=["cursor_pos", "target_pos", "hand_pos", "cursor_vel", "target_vel", "hand_vel"]
         pnc_replay = PnCGame(config=self.task_config)
-        pnc_replay.cpi = float(
-            self.initial_task_cond.get("cpi", pnc_replay.cpi)
+        replay_condition = dict(self.initial_task_cond)
+        # Reuse the exact sampled physical mouse mapping from the rollout.
+        for name in (
+            "cpi",
+            "mouse_rotation_gain_x",
+            "mouse_rotation_gain_y",
+            "mouse_plan_correction",
+        ):
+            if name in self.param:
+                replay_condition[name] = float(self.param[name])
+            elif name in self.initial_task_cond:
+                replay_condition[name] = float(self.initial_task_cond[name])
+
+        pnc_replay.reset(**replay_condition)
+        self.replay_mouse_parameters = {
+            name: float(getattr(pnc_replay, name))
+            for name in (
+                "cpi",
+                "mouse_rotation_gain_x",
+                "mouse_rotation_gain_y",
+                "mouse_plan_correction",
+            )
+        }
+        sensor_count_deltas = pnc_replay.get_sensor_count_deltas(self.htraj_p)
+        replay = pnc_replay.replay_and_save(
+            self.htraj_p,
+            self.htraj_v,
+            self.intv.interp,
+            unit='ms',
         )
-        pnc_replay.reset(**self.initial_task_cond)
-        return pnc_replay.replay_and_save(self.htraj_p, self.htraj_v, self.intv.interp, unit='ms')
+        replay["sensor_counts"] = np.vstack(
+            (np.zeros((1, 2), dtype=np.int64), sensor_count_deltas)
+        )
+        return replay
     
 
     def export_single_replay(self, filepath=None, filename=None, scale=0.7):
@@ -371,7 +454,8 @@ class PnCSimulator:
         model_name: str, 
         ckpt: Optional[int] | str = 'best', 
         record_type=PnCEpisodeRecordDefault,
-        simul_option_name = "default"
+        simul_option_name = "default",
+        policy_device: str = "cpu",
     ):
         ### Load PnC model
 
@@ -394,8 +478,6 @@ class PnCSimulator:
         else:
             raise TypeError("Argument ckpt must be an integer, 'best', or 'last'.")
         
-        self.model = SAC.load(self.policy)
-        
         # Configurations
         env_config = load_config(os.path.join(
             Path(__file__).parent.parent.parent, 
@@ -403,6 +485,7 @@ class PnCSimulator:
         ))
 
         self.model_name = f"{model_name}_{ckpt}"
+        self.policy_device = policy_device
 
         env_class = getattr(pnc_agent, env_config.env_class)
         env_intv = env_config.interval
@@ -427,7 +510,19 @@ class PnCSimulator:
         self.record_type = record_type
 
         self.user_param_list = self.env.user.param_modul.list
+        # Loading a Stable-Baselines checkpoint is expensive and can fail when
+        # the checkpoint was serialized with a different NumPy version.  Most
+        # inference calls only need parameter ranges, so load the policy only
+        # when a rollout is actually requested.
+        self.model = None
         # simul_param_list is set in below function.
+
+    def _ensure_policy_loaded(self):
+        if self.model is None:
+            # Dataset generation uses many CPU workers; letting every worker
+            # auto-select the same GPU causes avoidable CUDA memory failures.
+            self.model = SAC.load(self.policy, device=self.policy_device)
+        return self.model
     
 
     def _setup_simultor_only_param(self):
@@ -563,6 +658,7 @@ class PnCSimulator:
         resimulate_max_num: int=0,
         verbose=True
     ):
+        model = self._ensure_policy_loaded()
         if self.user_param_fixed and user_param_list is not None:
             print("Warning - The user parameters are currently fixed, but they will be overwritten by input param list...")
 
@@ -617,7 +713,7 @@ class PnCSimulator:
                 truncated = False
 
                 while not done:
-                    action, state = self.model.predict(getattr(self, self.simul_option.func)(obs), deterministic=True)
+                    action, state = model.predict(getattr(self, self.simul_option.func)(obs), deterministic=True)
                     obs, rew, done, truncated, info = self.env.step(action)
                     ep_rec.record(self.env, action, done, truncated, {**info, "simul_param": self.current_simul_param})
                     if done or truncated:
@@ -653,12 +749,19 @@ class PnCSimulator:
     ### ----------------------------------------------------------
 
     
-    def get_simulation_result(self, return_traj=False, downsample=None):
+    def get_simulation_result(
+        self, return_traj=False, downsample=None, remove_reaction=True
+    ):
         summ, traj = list(), list()
         for rec in self.simulation:
             summ.append(rec.get_summary_result(downsample=downsample))
             if return_traj:
-                traj.append(rec.get_trajectory_result(downsample=downsample))
+                traj.append(
+                    rec.get_trajectory_result(
+                        downsample=downsample,
+                        remove_reaction=remove_reaction,
+                    )
+                )
         summ = pd.concat(summ)
         summ.reset_index()
         

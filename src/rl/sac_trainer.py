@@ -4,9 +4,10 @@ for Point-and-Click agent training
 
 Code written by June-Seop Yoon
 """
-import os, psutil
+import os, psutil, random
 from pathlib import Path
 
+import numpy as np
 import torch
 from stable_baselines3 import SAC
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
@@ -42,13 +43,24 @@ class SACTrainer:
         time_tag=True,
         num_cpu=16,
         train_config="default",
-        env_class="default",
-        env_setting=dict(
-            agent_name="default",
-            env_name="default",
-            interval_name="default",
-        )
+        env_class="PnCEnvDefault",
+        env_setting=None,
+        seed=20260819,
     ):
+        self.seed = int(seed)
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
+        if env_setting is None:
+            env_setting = dict(
+                agent_name="classic",
+                env_name="default",
+                interval_name="default",
+            )
+        else:
+            env_setting = dict(env_setting)
         # Set model name
         if model_name_prefix is None:
             self.model_name = get_compact_timestamp_str()
@@ -144,7 +156,9 @@ class SACTrainer:
             log_path=os.path.join(run_path, "evaluation"),
             parameter_log_path=os.path.join(run_path, "evaluation", "parameters"),
             callback_after_eval=None, 
-            n_eval_episodes=max(1, self.config.callback.eval_ep // self.num_cpu),
+            # eval_env contains one environment. Unlike eval_freq/save_freq,
+            # the episode count must not be divided by the training VecEnv size.
+            n_eval_episodes=max(1, int(self.config.callback.eval_ep)),
             verbose=0
         )
         std_cb = TensorboardStdCallback()
@@ -164,6 +178,7 @@ class SACTrainer:
             gamma=self.config.model.gamma,
             target_entropy=self.config.model.target_entropy,
             device=self.device,
+            seed=self.seed,
             train_freq=(1, "step"),
             policy_kwargs={
                 "net_arch": self.config.model.mlp.arch,
@@ -208,6 +223,10 @@ class SACTrainer:
             self.config, 
             os.path.join(run_path, "train_config.yaml")
         )
+        save_dict_to_yaml(
+            {"seed": self.seed},
+            os.path.join(run_path, "reproducibility.yaml"),
+        )
         self.model.learn(
             self.config.train.step,
             log_interval=self.config.train.log_freq,
@@ -227,7 +246,7 @@ if __name__ == "__main__":
 
     parser.add_argument('--num_cpu', type=int, default=16)
     parser.add_argument('--env_class_type', type=str, default="PnCEnvDefault")
-    parser.add_argument('--agent_type', type=str, default="default")
+    parser.add_argument('--agent_type', type=str, default="classic")
     parser.add_argument('--pnc_type', type=str, default="default")
     parser.add_argument('--rl_setting', type=str, default="simple")
     parser.add_argument('--model_name_prefix', type=str, default=None)
@@ -243,6 +262,7 @@ if __name__ == "__main__":
     parser.add_argument('--load_model', type=str, default=None)
     parser.add_argument('--load_replay_buffer', type=str, default=None)
     parser.add_argument('--reset_num_timesteps', action='store_true')
+    parser.add_argument('--seed', type=int, default=20260819)
 
     args = parser.parse_args()
 
@@ -255,7 +275,8 @@ if __name__ == "__main__":
         env_setting=dict(
             agent_name=args.agent_type,
             pnc_env_name=args.pnc_type,
-        )
+        ),
+        seed=args.seed,
     )
     model_changed = False
     callback_changed = False

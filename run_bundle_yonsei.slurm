@@ -32,6 +32,7 @@ RL_SETTING="${RL_SETTING:-default}"
 STEPS="${STEPS:-30000000}"
 DEVICE="${DEVICE:-cuda}"
 ENV_CLASS_TYPE="${ENV_CLASS_TYPE:-PnCEnvDefault}"
+SEED="${SEED:-20260819}"
 
 "$PYTHON_BIN" - <<'PY'
 import torch
@@ -53,6 +54,7 @@ command=(
   --model_name_prefix "$RUN_NAME"
   --steps "$STEPS"
   --device "$DEVICE"
+  --seed "$SEED"
 )
 
 if [[ -n "${LOAD_MODEL:-}" ]]; then

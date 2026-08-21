@@ -125,8 +125,6 @@ class PnCTwoLevelConditionalAmortizerTrainer(ABC):
         save_dict_to_yaml(self.train_dataset.norm_config, os.path.join(DIR_TO_DATA, f"data/{FOLDER.AMORTIZER3}/models/{self.name}/data_normalization_setting.yaml"))
         save_dict_to_yaml(self.train_dataset.sim_config, os.path.join(DIR_TO_DATA, f"data/{FOLDER.AMORTIZER3}/models/{self.name}/simulator_setting.yaml"))
         
-        self.clipping = float("Inf")
-    
         # Prepare data process for inference
         self.stat_range = np.array([
             [self.train_dataset.norm_config.stat.range[feat].min,
@@ -231,8 +229,10 @@ class PnCTwoLevelConditionalAmortizerTrainer(ABC):
     def _optim_step(self, loss):
         self.optimizer.zero_grad()
         loss.backward()
-        for param in self.amortizer.parameters():
-            param.grad.data.clamp_(-self.clipping, self.clipping)
+        if np.isfinite(self.clipping) and self.clipping > 0:
+            torch.nn.utils.clip_grad_norm_(
+                self.amortizer.parameters(), max_norm=float(self.clipping)
+            )
         self.optimizer.step()
         return loss.item()
 

@@ -12,6 +12,8 @@ from src.scripts.shared_cpi_2step_run import (
     build_simulator_config,
     build_training_config,
 )
+from src.scripts.shared_cpi_rawcount_ablation import register_profiles
+from src.utils.raw_count_features import RAW_COUNT_FEATURE_NAMES
 
 
 class SharedCpiConfigurationTests(unittest.TestCase):
@@ -33,6 +35,21 @@ class SharedCpiConfigurationTests(unittest.TestCase):
     def test_trial_count_parser(self):
         self.assertIsNone(parse_trial_counts("all"))
         self.assertEqual(parse_trial_counts("64,16,64"), [16, 64])
+
+    def test_rawcount_ablation_only_adds_cpi_safe_count_features(self):
+        register_profiles()
+        reference = build_data_config("summary-only", "speedpath")
+        rawcount = build_data_config("summary-only", "rawcount")
+
+        self.assertEqual(
+            rawcount.stat.list[: len(reference.stat.list)], reference.stat.list
+        )
+        self.assertEqual(
+            tuple(rawcount.stat.list[len(reference.stat.list) :]),
+            RAW_COUNT_FEATURE_NAMES,
+        )
+        self.assertNotIn("cpi", rawcount.stat.list)
+        self.assertFalse(any(name.endswith("_m") for name in RAW_COUNT_FEATURE_NAMES))
 
 
 class ConditionalTrajectoryRegressionTests(unittest.TestCase):

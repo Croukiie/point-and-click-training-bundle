@@ -193,8 +193,6 @@ class PnCConditionalAmortizerTrainer(ABC):
             save_dict_to_yaml(self.train_dataset.norm_config, os.path.join(DIR_TO_DATA, f"data/{FOLDER.AMORTIZER2}/models/{self.name}/data_normalization_setting.yaml"))
             save_dict_to_yaml(self.train_dataset.sim_config, os.path.join(DIR_TO_DATA, f"data/{FOLDER.AMORTIZER2}/models/{self.name}/simulator_setting.yaml"))
         
-        self.clipping = float("Inf")
-    
         # Prepare data process for inference
         self.stat_range = np.array([
             [self.train_dataset.norm_config.stat.range[feat].min,
@@ -306,8 +304,10 @@ class PnCConditionalAmortizerTrainer(ABC):
     def _optim_step(self, loss):
         self.optimizer.zero_grad()
         loss.backward()
-        for param in self.amortizer.parameters():
-            param.grad.data.clamp_(-self.clipping, self.clipping)
+        if np.isfinite(self.clipping) and self.clipping > 0:
+            torch.nn.utils.clip_grad_norm_(
+                self.amortizer.parameters(), max_norm=float(self.clipping)
+            )
         self.optimizer.step()
         return loss.item()
 
@@ -485,6 +485,11 @@ class PnCConditionalAmortizerTrainer(ABC):
                 ylabel=f"Inferred {PARAM_SYMBOL.get(p, p)}",
             )
             result_log[f"Parameter_Recovery/{infer_type}/r2_{n_datasize:03d}_{p}_{surfix}"] = result["R2"]
+            for metric in ("PearsonR", "Slope", "MAE", "RMSE"):
+                result_log[
+                    f"Parameter_Recovery/{infer_type}/{metric.lower()}_"
+                    f"{n_datasize:03d}_{p}_{surfix}"
+                ] = result[metric]
             rsq_list.append(result["R2"])
         fig.suptitle(f"Num. of trials: {n_datasize}", fontsize=12)
         figure_save(fig, f"{basedir}/trial{n_datasize:03d}_main.png")
@@ -500,6 +505,11 @@ class PnCConditionalAmortizerTrainer(ABC):
                 ylabel=f"Inferred {PARAM_SYMBOL.get(p, p)}",
             )
             result_log[f"Parameter_Recovery/{infer_type}/r2_{n_datasize:03d}_{p}_{surfix}"] = result["R2"]
+            for metric in ("PearsonR", "Slope", "MAE", "RMSE"):
+                result_log[
+                    f"Parameter_Recovery/{infer_type}/{metric.lower()}_"
+                    f"{n_datasize:03d}_{p}_{surfix}"
+                ] = result[metric]
             rsq_list.append(result["R2"])
         fig.suptitle(f"Num. of trials: {n_datasize}", fontsize=12)
         figure_save(fig, f"{basedir}/trial{n_datasize:03d}_sub.png")

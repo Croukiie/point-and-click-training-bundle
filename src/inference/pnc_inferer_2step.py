@@ -14,6 +14,7 @@ from ..nets.amortizer import ConditionalAmortizerForTrialData, ConditionalRegres
 from .pnc_dataset_2step import PnCSimulatorForConditionalAmortizer
 from ..utils.mymath import linear_normalize
 from ..config.constant import FIELD, FOLDER
+from ..utils.trajectory_preprocessing import resample_feature_frame
 
 DIR_TO_DATA = Path(__file__).parent.parent.parent
 
@@ -173,16 +174,12 @@ class PnCConditionalInferer:
         if traj is not None:
             traj_norm = list()
             for _t in traj:
-                # Downsampling
-                old_timestamp = _t["timestamp"].to_numpy()
-                new_timestamp = np.linspace(0, old_timestamp[-1], round(old_timestamp[-1] * self.simulator_config.traj_downsample) + 1)
-                new_traj = list()
-                for key in self.data_normalization.traj.list:
-                    if key != FIELD.TIMEDIFF:
-                        new_traj.append(np.interp(new_timestamp, old_timestamp, _t[key].to_numpy()))
-                    else:
-                        new_traj.append(np.insert(np.diff(new_timestamp), 0, 0))
-                new_traj = np.array(new_traj).T
+                new_traj = resample_feature_frame(
+                    _t,
+                    self.data_normalization.traj.list,
+                    self.simulator_config.traj_downsample,
+                    timediff_key=FIELD.TIMEDIFF,
+                )
                 traj_norm.append(linear_normalize(new_traj, *self.traj_range.T, dtype=np.float32))
 
             traj_norm = np.array(traj_norm, dtype=object)

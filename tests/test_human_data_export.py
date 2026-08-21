@@ -71,9 +71,9 @@ class HumanDataExportTests(unittest.TestCase):
                 writer.writerow(trial)
 
             raw_rows = [
-                {"trial_id": "7", "time_from_onset_ns": "100000000", "cursor_x_m": "0.001", "cursor_y_m": "0", "speed_m_s": "0.2"},
-                {"trial_id": "7", "time_from_onset_ns": "150000000", "cursor_x_m": "0.05", "cursor_y_m": "0.002", "speed_m_s": "0.5"},
-                {"trial_id": "7", "time_from_onset_ns": "200000000", "cursor_x_m": "0.099", "cursor_y_m": "0", "speed_m_s": "0.3"},
+                {"trial_id": "7", "time_from_onset_ns": "100000000", "dt_ns": "1000000", "dx_counts": "3", "dy_counts": "4", "cursor_x_m": "0.001", "cursor_y_m": "0", "speed_m_s": "0.2"},
+                {"trial_id": "7", "time_from_onset_ns": "150000000", "dt_ns": "1000000", "dx_counts": "6", "dy_counts": "8", "cursor_x_m": "0.05", "cursor_y_m": "0.002", "speed_m_s": "0.5"},
+                {"trial_id": "7", "time_from_onset_ns": "200000000", "dt_ns": "1000000", "dx_counts": "0", "dy_counts": "2", "cursor_x_m": "0.099", "cursor_y_m": "0", "speed_m_s": "0.3"},
             ]
             with (session_dir / "raw_mouse_events.csv").open(
                 "w", newline="", encoding="utf-8"
@@ -103,7 +103,20 @@ class HumanDataExportTests(unittest.TestCase):
                 stats = list(csv.DictReader(handle))
             self.assertEqual(len(stats), 1)
             self.assertTrue(set(AMORTIZER_FEATURES).issubset(stats[0]))
-            self.assertEqual(float(stats[0]["max_cursor_speed"]), 0.5)
+            # Speed is recomputed from the exact exported trajectory instead of
+            # trusting the event logger's potentially different convention.
+            self.assertAlmostEqual(
+                float(stats[0]["max_cursor_speed"]),
+                (0.05**2 + 0.002**2) ** 0.5 / 0.05,
+            )
+            self.assertGreater(float(stats[0]["raw_count_moving_bins"]), 0)
+            self.assertGreater(
+                float(stats[0]["raw_count_path_per_second"]), 0
+            )
+            self.assertEqual(manifest["raw_count_bin_hz"], 125)
+            self.assertIn(
+                "no CPI-based distance conversion", manifest["raw_count_units"]
+            )
 
             with (output / "human_amortizer_trajectories.csv").open(
                 newline="", encoding="utf-8"
@@ -112,6 +125,8 @@ class HumanDataExportTests(unittest.TestCase):
             self.assertEqual(len(trajectory), 3)
             self.assertEqual(float(trajectory[0]["timestamp"]), 0.0)
             self.assertAlmostEqual(float(trajectory[1]["timediff"]), 0.05)
+            self.assertAlmostEqual(float(trajectory[0]["cursor_pos_x"]), 0.0)
+            self.assertAlmostEqual(float(trajectory[-1]["cursor_pos_x"]), 0.099)
             self.assertEqual({row["trial_uid"] for row in trajectory}, {"session_1:7"})
 
     def test_unconfirmed_cpi_is_excluded_by_default(self):

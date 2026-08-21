@@ -8,7 +8,7 @@ import numpy as np
 from box import Box
 from typing import List, Union
 
-from ..utils.mymath import get_r_squared
+from ..utils.mymath import get_r_squared, recovery_metrics
 
 
 def figure_grid(n_row, n_col, size=None, size_ax=None, gridspec_kw=dict()):
@@ -210,8 +210,16 @@ def draw_r2_plot(ax:Axes, xdata, ydata, **kwargs):
 
     result = dict()
 
-    rsq_value = get_r_squared(xdata, ydata)
-    result["R2"] = rsq_value
+    metrics = recovery_metrics(xdata, ydata)
+    rsq_value = metrics["r2"]
+    result.update({
+        "R2": rsq_value,
+        "PearsonR": metrics["pearson_r"],
+        "Slope": metrics["slope"],
+        "Intercept": metrics["intercept"],
+        "MAE": metrics["mae"],
+        "RMSE": metrics["rmse"],
+    })
 
     if settings.min_val is not None:
         min_val = settings.min_val
@@ -225,9 +233,12 @@ def draw_r2_plot(ax:Axes, xdata, ydata, **kwargs):
 
     dist_val = (max_val - min_val) * settings.edge_margin
 
-    y_fit = np.polyfit(xdata, ydata, 1)
+    y_fit = np.array([metrics["slope"], metrics["intercept"]])
     if settings.full_fit_label:
-        label = f"$({y_fit[0]:.2f})x + ({y_fit[1]:.2f}), R^2={rsq_value:.2f}$"
+        label = (
+            f"$({y_fit[0]:.2f})x + ({y_fit[1]:.2f}), "
+            f"R^2={rsq_value:.2f}, r={metrics['pearson_r']:.2f}$"
+        )
     else:
         label = f"$R^2={rsq_value:.2f}$"
     

@@ -385,7 +385,11 @@ class WebExperimentServer:
         self.templates = make_trial_templates(
             count, virtual_size, tuple(float(v) for v in self.exp["target_id_range"]),
             int(self.exp["seed"]),
-            cursor_position_m=(0.0, 0.0) if start_target_enabled else None,
+            cursor_position_m=None,
+            target_radius_range_m=tuple(
+                float(v)
+                for v in self.exp.get("target_radius_range_m", (0.00125, 0.007))
+            ),
         )
         self.template_by_id = {item.template_id: item for item in self.templates}
         self.current_cursor = np.zeros(2, dtype=np.float64)
@@ -414,9 +418,10 @@ class WebExperimentServer:
                     "starts from the virtual cursor position left by the "
                     "previous trial."
                     if not start_target_enabled
-                    else "Each logical trial is logged as a center start "
-                    "target followed by the main random target. The virtual "
-                    "cursor position is preserved between stages."
+                    else "Each logical trial is logged as a sampled start "
+                    "target followed by its jointly sampled task target. After "
+                    "a successful start click, the virtual cursor is snapped "
+                    "to the start-target center so simulator geometry is exact."
                 ),
                 "cursor_source": (
                     "Windows Raw Input reconstructed by Python"
@@ -1038,13 +1043,33 @@ class WebExperimentServer:
             "rendered_task_height_physical_m": client.get("rendered_task_height_physical_m"),
             "rendered_target_radius_physical_m": client.get("rendered_target_radius_physical_m"),
         }
+        next_cursor = trial["cursor"].copy()
+        if (
+            trial["valid"]
+            and trial["trial_stage"] == "start"
+            and trial["outcome"] == "success"
+        ):
+            next_cursor = np.array(
+                [template.target_x_m, template.target_y_m], dtype=np.float64
+            )
+            trial["events"].append({
+                "event": "virtual_cursor_snap",
+                "session_id": self.session_id,
+                "trial_id": trial["trial_id"],
+                "timestamp_ns": trial["end_ns"],
+                "phase": trial["phase"],
+                "trial_stage": trial["trial_stage"],
+                "x_m": float(next_cursor[0]),
+                "y_m": float(next_cursor[1]),
+                "input_backend": self.input_backend,
+            })
         assert self.logger is not None
         self.logger.submit_trial(summary, trial["raw_rows"], frame_rows, trial["events"])
         trial_id = trial["trial_id"]
         trial_stage = trial["trial_stage"]
         outcome = trial["outcome"]
         valid = trial["valid"]
-        self.current_cursor = trial["cursor"].copy()
+        self.current_cursor = next_cursor
         self.current_raw_session_pos = trial["raw_session_pos"].copy()
         self.trial = None
         await self._send({
