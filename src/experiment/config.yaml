@@ -1,13 +1,13 @@
 experiment:
   name: pnc_cpi_study
-  protocol_version: simulator_geometry_exact_v3
+  protocol_version: target_radius_matched_v2
   refresh_hz: 240
   timeout_s: 3.0
   inter_trial_s: 0.30
   feedback_s: 0.0
-  # Required for exact simulator geometry: the start target moves the virtual
-  # cursor to the cursor position sampled jointly with the task target.
-  start_target_enabled: true
+  # V2 keeps the cursor continuous across trials and therefore has no separate
+  # red positioning target before the white task target.
+  start_target_enabled: false
   start_target_radius_m: 0.006
   practice_trials_per_cpi: 15
   measured_trials_per_cpi: 128
@@ -30,19 +30,30 @@ display:
   virtual_size_m: [0.5313124474, 0.2988632517]
 
 logging:
-  expected_mouse_polling_hz: 1000
+  # Effective Windows Raw Input rate measured independently on the lab mouse.
+  # Raw-count summaries use the same 125 Hz binning contract before the
+  # amortizer's separate 20 Hz trajectory preprocessing.
+  expected_mouse_polling_hz: 125
   writer_queue_size: 12
 
 appearance:
   background_rgb: [24, 27, 33]
-  target_rgb: [245, 247, 250]
+  target_rgb: [244, 162, 97]
   start_target_rgb: [235, 64, 52]
-  cursor_rgb: [104, 205, 255]
+  cursor_style: aero_arrow
+  cursor_bitmap_size_px: [32, 32]
+  cursor_rgb: [255, 255, 255]
+  cursor_outline_rgb: [32, 32, 32]
+  cursor_shadow_rgb: [0, 0, 0]
+  cursor_shadow_alpha: 0
+  cursor_shadow_offset_px: 0
+  cursor_arrow_width_px: 12
+  cursor_arrow_height_px: 18
+  cursor_arrow_outline_px: 1
+  phase_counter_rgb: [230, 232, 236]
+  phase_counter_alpha: 0.48
+  phase_counter_font_px: 14
+  phase_counter_margin_px: 18
   success_rgb: [24, 27, 33]
   failure_rgb: [24, 27, 33]
   text_rgb: [230, 232, 236]
-  cursor_radius_px: 5
-  cursor_crosshair_gap_px: 2
-  cursor_crosshair_length_px: 6
-  cursor_crosshair_center_px: 2
-  cursor_line_width_px: 2

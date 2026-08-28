@@ -55,11 +55,17 @@ runs/
 wandb/
 
 # Logs and temporary files
+logs/
+.last_*
 *.log
 *.tmp
 *.temp
 *.bak
 *.pid
+*.tar
+*.tar.gz
+*.patch
+rawcount_visible_export_*.txt
 
 # Operating-system files
 .DS_Store

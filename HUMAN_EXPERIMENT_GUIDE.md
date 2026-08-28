@@ -3,6 +3,36 @@
 This protocol collects human point-and-click trajectories that can be compared
 directly with the curvature amortizer.
 
+## Cursor-presentation A/B pilot
+
+To test whether the controlled virtual cursor changes human behavior relative
+to the native Windows cursor, launch the shortened pilot protocol:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_human_experiment_windows.ps1 -CursorABPilot
+```
+
+Run two separate sessions for the same participant and keep every hardware
+setting unchanged. Select `Virtual cursor (controlled)` for one session and
+`Native Windows cursor (A/B diagnostic)` for the other. The pilot contains 3
+practice and 20 measured trials at each of 400, 800 and 1600 CPI. Reverse the
+condition order for the next participant to reduce order effects.
+
+Both conditions save the same Windows Raw Input counts. The virtual condition
+reconstructs its controlled cursor from those counts. The native condition uses
+the mapped Windows cursor position for the visible trajectory and hit test,
+while also saving the count-reconstructed trajectory and their alignment. Once
+both sessions are complete, compare them with:
+
+```powershell
+python -m src.experiment.compare_cursor_presentation_ab `
+  --virtual-session data\human_experiment\VIRTUAL_SESSION `
+  --native-session data\human_experiment\NATIVE_SESSION
+```
+
+Do not merge these short diagnostic sessions into the main 128-trial-per-CPI
+dataset.
+
 ## What is collected
 
 - three counterbalanced CPI conditions: 400, 800, and 1600 CPI;

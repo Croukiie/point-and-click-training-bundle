@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Point-and-click experiment</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260713-small-blue-crosshair-v2">
+  <link rel="stylesheet" href="/static/style.css?v=20260826-native-authoritative-v16">
 </head>
 <body>
   <main id="setup" class="setup-shell">
@@ -33,7 +33,7 @@
             </div>
             <div>
               <span class="protocol-number">03</span>
-              <p><strong>Run the fixed task window</strong><br>The task starts in fullscreen for the 24 inch Full HD profile; raw mouse events are saved locally.</p>
+              <p><strong>Run the target-radius-matched v2 task</strong><br>Point directly to each white target; the cursor remains continuous between trials and raw mouse events are saved locally.</p>
             </div>
           </div>
         </div>
@@ -76,6 +76,26 @@
             <label>
               Mouse model
               <input id="mouse-model" autocomplete="off" placeholder="Model name">
+            </label>
+            <label>
+              Effective Raw Input rate (Hz) <span aria-hidden="true">*</span>
+              <input id="mouse-polling-hz" type="number" required min="1" max="8000" step="1" value="125">
+            </label>
+            <label>
+              Cursor presentation <span aria-hidden="true">*</span>
+              <select id="cursor-presentation-mode" required>
+                <option value="virtual_raw_input" selected>Virtual cursor (controlled)</option>
+                <option value="native_windows">Native Windows cursor (A/B diagnostic)</option>
+              </select>
+            </label>
+            <label>
+              CPI setting method <span aria-hidden="true">*</span>
+              <select id="cpi-setting-method" required>
+                <option value="physical_button" selected>Physical mouse button</option>
+                <option value="mouse_software">Mouse software</option>
+                <option value="hardware_profile">Saved hardware profile</option>
+                <option value="other">Other verified method</option>
+              </select>
             </label>
             <label>
               Gaming hours per week
@@ -141,7 +161,7 @@
           <div class="preflight">
             <div><span>Fixed display</span><strong>24 inch Full HD</strong></div>
             <div><span>Virtual task space</span><strong>0.5313 x 0.2989 m</strong></div>
-            <div><span>Recorded trials</span><strong>384 total</strong></div>
+            <div><span>Recorded trials</span><strong id="configured-trial-count">384 total</strong></div>
           </div>
 
           <button id="start-button" class="primary" type="submit" disabled>
@@ -168,9 +188,10 @@
         </div>
       </div>
     </div>
+    <img id="ui-cursor" class="ui-cursor hidden" alt="" aria-hidden="true">
     <div id="fatal" class="fatal hidden"></div>
   </section>
 
-  <script src="/static/app.js?v=20260713-small-blue-crosshair-v2" defer></script>
+  <script src="/static/app.js?v=20260826-native-authoritative-v19" defer></script>
 </body>
 </html>

@@ -517,6 +517,32 @@ button.danger:hover {
   background: var(--bg);
 }
 
+/* The native browser pointer stays hidden during the experiment. The same
+   aero-arrow image is used on both the task canvas and the text overlays. */
+.experiment,
+.experiment * {
+  cursor: none !important;
+}
+
+/* A/B diagnostic condition: expose the actual operating-system arrow while
+   the Python recorder continues to save the same Windows Raw Input stream. */
+.experiment.native-windows-cursor,
+.experiment.native-windows-cursor * {
+  cursor: default !important;
+}
+
+.ui-cursor {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10000;
+  width: 32px;
+  height: 32px;
+  pointer-events: none;
+  user-select: none;
+  transform: translate3d(0, 0, 0);
+}
+
 #task-canvas {
   display: block;
   width: 1920px;

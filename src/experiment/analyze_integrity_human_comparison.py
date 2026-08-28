@@ -10,6 +10,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import yaml
 
 from .infer_human_shared_cpi import shared_infer_subset, trial_subset_hash
 from ..inference.pnc_inferer_2step import PnCConditionalInferer
@@ -29,6 +30,26 @@ DEFAULT_MODELS = {
         "integrity_visible_260819_151300_SUMMARY_08210246"
     ),
 }
+
+
+def parse_model_arguments(values: list[str] | None) -> dict[str, str]:
+    if not values:
+        return dict(DEFAULT_MODELS)
+    models: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise argparse.ArgumentTypeError(
+                f"Invalid model {value!r}; expected LABEL=MODEL_DIRECTORY"
+            )
+        label, model = (part.strip() for part in value.split("=", 1))
+        if not label or not model:
+            raise argparse.ArgumentTypeError(
+                f"Invalid model {value!r}; expected LABEL=MODEL_DIRECTORY"
+            )
+        if label in models:
+            raise argparse.ArgumentTypeError(f"Duplicate model label: {label}")
+        models[label] = model
+    return models
 
 
 def predictive_metrics(true: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
@@ -230,11 +251,12 @@ def human_summaries(predictions: pd.DataFrame):
 def plot_human(summary: pd.DataFrame, output: Path, trial_count: int):
     selected = summary[summary["n_trials_per_block"] == trial_count]
     participants = sorted(selected["participant_id"].unique())
-    variants = [label for label in ("speedpath", "core3") if label in set(selected["model_variant"])]
+    variants = list(selected["model_variant"].drop_duplicates())
     fig, axes = plt.subplots(
         len(variants), len(participants), figsize=(6 * len(participants), 4.5 * len(variants)), squeeze=False
     )
-    colors = {"speedpath": "#2878b5", "core3": "#d65f5f"}
+    palette = plt.get_cmap("tab10")
+    colors = {variant: palette(index) for index, variant in enumerate(variants)}
     for row, variant in enumerate(variants):
         for column, participant in enumerate(participants):
             axis = axes[row, column]
@@ -248,12 +270,12 @@ def plot_human(summary: pd.DataFrame, output: Path, trial_count: int):
                 linewidth=2.2, color=colors[variant], label=variant,
             )
             axis.plot([400, 1600], [400, 1600], "--", color="0.25", label="identity")
-            axis.set_title(f"{participant} — {variant}")
+            axis.set_title(f"{participant} - {variant}")
             axis.set_xlabel("True CPI")
             axis.set_ylabel("Inferred CPI")
             axis.grid(alpha=0.25)
             axis.legend()
-    fig.suptitle(f"Integrity shared-CPI amortizers on human pilot data ({trial_count} trials/block)")
+    fig.suptitle(f"Shared-CPI amortizers on human pilot data ({trial_count} trials/block)")
     fig.tight_layout()
     fig.savefig(output, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -266,19 +288,25 @@ def main(argv=None) -> int:
     parser.add_argument("--trial-counts", default="16,32,64")
     parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--seed", type=int, default=20260821)
+    parser.add_argument(
+        "--model",
+        action="append",
+        help="Model mapping as LABEL=MODEL_DIRECTORY; repeat for each model",
+    )
     args = parser.parse_args(argv)
 
+    models = parse_model_arguments(args.model)
     trial_counts = sorted({int(value) for value in args.trial_counts.split(",")})
     output_dir = args.output_dir or (
-        args.export_dir / f"integrity_visible_comparison_{datetime.now():%Y%m%d_%H%M%S}"
+        args.export_dir / f"shared_cpi_human_comparison_{datetime.now():%Y%m%d_%H%M%S}"
     )
     output_dir.mkdir(parents=True, exist_ok=False)
 
     predictions = human_predictions(
-        args.export_dir, DEFAULT_MODELS, trial_counts, args.repeats, args.seed
+        args.export_dir, models, trial_counts, args.repeats, args.seed
     )
     human_summary, human_metrics, human_ordering = human_summaries(predictions)
-    simulated_predictions, simulated_metrics = simulated_results(DEFAULT_MODELS, trial_counts)
+    simulated_predictions, simulated_metrics = simulated_results(models, trial_counts)
     combined_metrics = pd.concat([simulated_metrics, human_metrics], ignore_index=True)
 
     predictions.to_csv(output_dir / "human_predictions.csv", index=False)
@@ -289,14 +317,35 @@ def main(argv=None) -> int:
     plot_human(human_summary, output_dir / "human_cpi_comparison.png", max(trial_counts))
 
     stats = pd.read_csv(args.export_dir / "human_amortizer_stats.csv")
+    export_manifest_path = args.export_dir / "export_manifest.json"
+    export_manifest = (
+        json.loads(export_manifest_path.read_text(encoding="utf-8"))
+        if export_manifest_path.exists()
+        else {}
+    )
+    simulation_contracts = {}
+    for label, model in models.items():
+        design_path = (
+            ROOT
+            / "data/amortizer_cond/models"
+            / model
+            / "shared_fit_design.yaml"
+        )
+        design = yaml.safe_load(design_path.read_text(encoding="utf-8"))
+        simulation_contracts[label] = design.get("dataset_contract")
+    human_protocol = export_manifest.get("protocol_version_filter", "unknown")
     manifest = {
         "created_local": datetime.now().astimezone().isoformat(),
-        "models": DEFAULT_MODELS,
+        "models": models,
         "checkpoint": 200,
         "human_export": str(args.export_dir.resolve()),
-        "human_protocol": "target_radius_matched_v2",
-        "simulation_contract": "movement_exact20_endpoint_clickonly_v3",
-        "interpretation": "diagnostic_only_until_v3_human_trials_are_collected",
+        "human_protocol": human_protocol,
+        "simulation_contracts": simulation_contracts,
+        "interpretation": (
+            "diagnostic_only_until_v3_human_trials_are_collected"
+            if human_protocol != "simulator_geometry_exact_v3"
+            else "matched_v3_human_evaluation"
+        ),
         "trial_counts": trial_counts,
         "bootstrap_repeats": args.repeats,
         "seed": args.seed,

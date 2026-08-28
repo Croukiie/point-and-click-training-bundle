@@ -29,6 +29,25 @@ RI_MOUSE_MIDDLE_BUTTON_UP = 0x0020
 RI_MOUSE_WHEEL = 0x0400
 
 
+def set_os_cursor_position(x_px: int, y_px: int) -> bool:
+    """Move the Windows cursor to an absolute screen position."""
+    user32 = ctypes.windll.user32
+    user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+    user32.SetCursorPos.restype = wintypes.BOOL
+    return bool(user32.SetCursorPos(int(x_px), int(y_px)))
+
+
+def get_os_cursor_position() -> tuple[int, int] | None:
+    """Return the current Windows cursor position in this process' DPI space."""
+    user32 = ctypes.windll.user32
+    user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+    user32.GetCursorPos.restype = wintypes.BOOL
+    point = wintypes.POINT()
+    if not user32.GetCursorPos(ctypes.byref(point)):
+        return None
+    return int(point.x), int(point.y)
+
+
 @dataclass(frozen=True)
 class RawMouseEvent:
     timestamp_ns: int

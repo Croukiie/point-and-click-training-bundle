@@ -394,6 +394,7 @@ def export_sessions(
     include_practice: bool = False,
     allow_unconfirmed_cpi: bool = False,
     protocol_version: str | None = None,
+    session_names: set[str] | None = None,
 ) -> dict[str, Any]:
     if trajectory_hz <= 0:
         raise ValueError("trajectory_hz must be positive")
@@ -406,8 +407,8 @@ def export_sessions(
     sessions = [
         session_dir
         for session_dir, session in session_metadata.items()
-        if protocol_version is None
-        or _protocol_version(session) == protocol_version
+        if (protocol_version is None or _protocol_version(session) == protocol_version)
+        and (not session_names or session_dir.name in session_names)
     ]
     if not sessions:
         suffix = (
@@ -531,6 +532,7 @@ def export_sessions(
         "session_count": len(sessions),
         "source_sessions": [session_dir.name for session_dir in sessions],
         "protocol_version_filter": protocol_version,
+        "session_name_filter": sorted(session_names) if session_names else None,
         "exported_trial_count": exported_trials,
         "exported_trajectory_sample_count": exported_samples,
         "trajectory_hz": trajectory_hz,
@@ -587,6 +589,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--protocol-version",
         help="Export only sessions whose recorded protocol version matches exactly.",
     )
+    parser.add_argument(
+        "--session",
+        action="append",
+        help="Export only this session directory name; repeat to select several sessions.",
+    )
     return parser
 
 
@@ -604,6 +611,7 @@ def main() -> int:
         include_practice=args.include_practice,
         allow_unconfirmed_cpi=args.allow_unconfirmed_cpi,
         protocol_version=args.protocol_version,
+        session_names=set(args.session) if args.session else None,
     )
     print(f"Exported {manifest['exported_trial_count']} trials to {output_dir.resolve()}")
     print(f"Trials per CPI: {manifest['trials_per_cpi']}")

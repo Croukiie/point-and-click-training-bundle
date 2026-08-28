@@ -133,6 +133,8 @@ def make_trial_stage_template(
     cursor_position_m: np.ndarray,
     virtual_size_m: tuple[float, float],
     start_target_radius_m: float = 0.006,
+    target_radius_range_m: tuple[float, float] | None = None,
+    preserve_sampled_task_geometry: bool = True,
 ) -> TrialTemplate:
     """Build the start or task stage consistently for native and web clients."""
     cursor = np.asarray(cursor_position_m, dtype=np.float64)
@@ -150,7 +152,26 @@ def make_trial_stage_template(
             [base_template.target_x_m, base_template.target_y_m],
             dtype=np.float64,
         )
-        radius = float(base_template.target_radius_m)
+        distance = float(np.linalg.norm(target - cursor))
+        if preserve_sampled_task_geometry or distance <= 0.0:
+            radius = float(base_template.target_radius_m)
+        else:
+            # V2 has no positioning target. Preserve the sampled Fitts ID for
+            # the cursor position left by the previous trial, then constrain
+            # the realized target to the configured radius and screen bounds.
+            radius = distance / (2.0**float(base_template.fitts_id) - 1.0) / 2.0
+            if target_radius_range_m is not None:
+                radius_min, radius_max = map(float, target_radius_range_m)
+                if not (0.0 < radius_min <= radius_max):
+                    raise ValueError(
+                        "target_radius_range_m must be positive and ordered"
+                    )
+                radius = float(np.clip(radius, radius_min, radius_max))
+            half_window = np.asarray(virtual_size_m, dtype=np.float64) / 2.0
+            max_radius = float(
+                np.min(np.minimum(target + half_window, half_window - target))
+            )
+            radius = max(1e-4, min(radius, max_radius))
     else:
         raise ValueError(f"Unknown trial stage: {trial_stage}")
 

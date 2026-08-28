@@ -7,9 +7,10 @@ Run from the repository root:
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import json
 import math
-import os
 from pathlib import Path
 import platform
 import sys
@@ -53,6 +54,17 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = Path(__file__).with_name("config.yaml")
 BACKEND_WINDOWS_RAW_INPUT = "windows_raw_input"
 BACKEND_PYGAME_RELATIVE = "pygame_relative"
+
+# Native 32 px frame extracted losslessly from the user-provided aero_arrow.cur.
+# The CUR hotspot is (0, 0), matching the virtual cursor coordinates.
+AERO_ARROW_CURSOR_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAA/klEQVR42u3VsWoCQRgE4Pl/"
+    "XQgIt3dCTslbWN1T5BXzErlSLewCaYJw2kqKEyshJzFYjIWaiCTGwtsF2Sm3mY9hlwUkKtWk"
+    "GbxFolI0HvhDSFSSpD/EHuAPcQTwgzgBuEf8AnCL+APgDnEGsP7aOECcAZDkcvlRM+IfAEnO"
+    "54saERcASHI2e6doPLh2ffP0YLVao9W6AwBoIxk6fQVV9Ukgqp7z/uEV9LV5/+gEcChXk2Y"
+    "idvw9u9hx7YDjcgAQTfLR6GW/QpLXusLuYv2UA4CaNIPYCUkWxZQi9s39J6lJXhTT3QoSvz"
+    "oHNEz3AWInou0nNZ0eQkJCQkJCbjVbxl9Gb4rWTdMAAAAASUVORK5CYII="
+)
 
 WEB_THEME = {
     "bg": (11, 15, 23),
@@ -283,7 +295,9 @@ class PointAndClickExperiment:
         self.title_font = None
         self.kicker_font = None
         self.button_font = None
+        self.counter_font = None
         self.menu_background = None
+        self.cursor_surface = None
         self.clock = None
         self.resolution = self.requested_resolution
 
@@ -320,12 +334,16 @@ class PointAndClickExperiment:
                 "target_shape": "circle",
                 "target_motion": "fixed",
                 "first_click_ends_trial": True,
+                "intertrial_cursor_motion": (
+                    "Raw movement between trials sets the cursor start position "
+                    "of the next trial and is excluded from the completed trial trajectory."
+                ),
                 "start_target_enabled": bool(self.exp.get("start_target_enabled", False)),
                 "start_target_radius_m": float(self.exp.get("start_target_radius_m", 0.006)),
                 "trial_stage_note": (
                     "Reference/start targets are disabled. Each target trial "
-                    "starts from the virtual cursor position left by the "
-                    "previous trial."
+                    "starts from the current virtual cursor position after the "
+                    "participant's separately handled inter-trial movement."
                     if not bool(self.exp.get("start_target_enabled", False))
                     else "Each logical trial is logged as a sampled start "
                     "target followed by its jointly sampled task target. After "
@@ -372,6 +390,19 @@ class PointAndClickExperiment:
             self.screen = pygame.display.set_mode(requested, flags, vsync=1)
         except TypeError:
             self.screen = pygame.display.set_mode(requested, flags)
+        if self.appearance.get("cursor_style") == "aero_arrow":
+            cursor_bytes = base64.b64decode(AERO_ARROW_CURSOR_PNG_BASE64)
+            self.cursor_surface = pygame.image.load(
+                io.BytesIO(cursor_bytes), "aero_arrow.png"
+            ).convert_alpha()
+            cursor_size = tuple(
+                int(value)
+                for value in self.appearance.get("cursor_bitmap_size_px", (32, 32))
+            )
+            if self.cursor_surface.get_size() != cursor_size:
+                self.cursor_surface = pygame.transform.smoothscale(
+                    self.cursor_surface, cursor_size
+                )
         self.resolution = self.screen.get_size()
         if not self.args.windowed and self.resolution != self.requested_resolution:
             raise RuntimeError(
@@ -392,6 +423,9 @@ class PointAndClickExperiment:
         self.small_font = pygame.font.SysFont("segoeui", 21)
         self.kicker_font = pygame.font.SysFont("segoeui", 15, bold=True)
         self.button_font = pygame.font.SysFont("segoeui", 20, bold=True)
+        self.counter_font = pygame.font.SysFont(
+            "segoeui", int(self.appearance.get("phase_counter_font_px", 14))
+        )
         self.clock = pygame.time.Clock()
         self._refresh_menu_background()
 
@@ -537,10 +571,20 @@ class PointAndClickExperiment:
             yield event
 
     def main_instruction_lines(self) -> list[str]:
+        geometry_lines = (
+            [
+                "Each task begins with a red start target.",
+                "Click red to set the start, then point to the light-orange task target.",
+            ]
+            if bool(self.exp.get("start_target_enabled", False))
+            else [
+                "There is no center reference target; you may move freely between trials."
+            ]
+        )
         return [
             "Point-and-click experiment",
-            "The random target is white; the cursor is the small blue ring.",
-            "There is no center reference target; the cursor position is continuous across trials.",
+            "The random target is light orange; the cursor is the mouse arrow.",
+            *geometry_lines,
             "The first click ends each trial, even when it misses.",
             "Press P or Escape to open the pause menu.",
             "Press SPACE to continue.",
@@ -615,11 +659,57 @@ class PointAndClickExperiment:
         cursor_px = virtual_to_pixel(
             float(cursor[0]), float(cursor[1]), self.virtual_size, self.resolution
         )
+        x, y = int(cursor_px[0]), int(cursor_px[1])
+
+        if (
+            self.appearance.get("cursor_style") == "aero_arrow"
+            and self.cursor_surface is not None
+        ):
+            self.screen.blit(self.cursor_surface, (x, y))
+            return
+
+        if self.appearance.get("cursor_style", "arrow") == "arrow":
+            width = max(6, int(self.appearance.get("cursor_arrow_width_px", 12)))
+            height = max(10, int(self.appearance.get("cursor_arrow_height_px", 18)))
+            outline_width = max(
+                1, int(self.appearance.get("cursor_arrow_outline_px", 1))
+            )
+            # Compact classic Windows cursor. ``(x, y)`` remains its hotspot
+            # independently of the visible polygon.
+            points = [
+                (x, y),
+                (x, round(y + height * 0.78)),
+                (round(x + width * 0.28), round(y + height * 0.62)),
+                (round(x + width * 0.53), y + height),
+                (round(x + width * 0.75), round(y + height * 0.91)),
+                (round(x + width * 0.48), round(y + height * 0.58)),
+                (x + width, round(y + height * 0.58)),
+            ]
+            shadow_offset = max(
+                0, int(self.appearance.get("cursor_shadow_offset_px", 1))
+            )
+            if shadow_offset:
+                shadow_points = [
+                    (px + shadow_offset, py + shadow_offset) for px, py in points
+                ]
+                pygame.draw.polygon(
+                    self.screen,
+                    self.appearance.get("cursor_shadow_rgb", (0, 0, 0)),
+                    shadow_points,
+                )
+            pygame.draw.polygon(self.screen, self.appearance["cursor_rgb"], points)
+            pygame.draw.polygon(
+                self.screen,
+                self.appearance.get("cursor_outline_rgb", (32, 32, 32)),
+                points,
+                width=outline_width,
+            )
+            return
+
         gap = int(self.appearance.get("cursor_crosshair_gap_px", 18))
         length = int(self.appearance.get("cursor_crosshair_length_px", 60))
         thickness = max(1, int(self.appearance.get("cursor_line_width_px", 8)))
         center_size = max(1, int(self.appearance.get("cursor_crosshair_center_px", thickness)))
-        x, y = int(cursor_px[0]), int(cursor_px[1])
         rects = [
             pygame.Rect(x - gap - length, y - thickness // 2, length, thickness),
             pygame.Rect(x + gap, y - thickness // 2, length, thickness),
@@ -634,7 +724,29 @@ class PointAndClickExperiment:
         self._fill_task_background()
         self._draw_cursor(cursor)
 
-    def draw_trial(self, cursor: np.ndarray, template, color=None, trial_stage: str = "task"):
+    def _draw_phase_trial_counter(self, current: int, total: int):
+        if self.counter_font is None or total <= 0:
+            return
+        rendered = self.counter_font.render(
+            f"{current} / {total}",
+            True,
+            self.appearance.get("phase_counter_rgb", (230, 232, 236)),
+        )
+        rendered.set_alpha(
+            round(255 * float(self.appearance.get("phase_counter_alpha", 0.48)))
+        )
+        margin = int(self.appearance.get("phase_counter_margin_px", 18))
+        self.screen.blit(rendered, (self.resolution[0] - margin - rendered.get_width(), margin))
+
+    def draw_trial(
+        self,
+        cursor: np.ndarray,
+        template,
+        color=None,
+        trial_stage: str = "task",
+        phase_trial_index: int | None = None,
+        phase_trial_total: int | None = None,
+    ):
         self._fill_task_background()
         target_px = virtual_to_pixel(
             template.target_x_m, template.target_y_m, self.virtual_size, self.resolution
@@ -652,6 +764,8 @@ class PointAndClickExperiment:
             target_px,
             target_radius_px,
         )
+        if phase_trial_index is not None and phase_trial_total is not None:
+            self._draw_phase_trial_counter(phase_trial_index, phase_trial_total)
         self._draw_cursor(cursor)
 
     def rendered_target_geometry(self, template) -> tuple[int, float, float]:
@@ -661,30 +775,70 @@ class PointAndClickExperiment:
         rendered_id = math.log2(template.target_distance_m / (2.0 * radius_m) + 1.0)
         return radius_px, radius_m, rendered_id
 
-    def _blank_interval(self, duration_s: float, raw_mouse: RawInputMouse, cursor: np.ndarray | None = None):
+    def _blank_interval(
+        self,
+        duration_s: float,
+        raw_mouse: RawInputMouse,
+        cursor: np.ndarray | None = None,
+        *,
+        cpi: int | None = None,
+        allow_cursor_motion: bool = False,
+    ) -> np.ndarray | None:
+        visible_cursor = None if cursor is None else cursor.copy()
+        raw_m_per_count = physical_meters_per_count(cpi) if cpi is not None else None
         start = time.perf_counter()
         while time.perf_counter() - start < duration_s:
             for _ in self._handle_control_events():
                 pass
-            raw_mouse.drain()
-            if cursor is None:
+            consumed = raw_mouse.drain()
+            if allow_cursor_motion and visible_cursor is not None:
+                for raw in consumed:
+                    visible_cursor[0] += raw.dx * self.cursor_meters_per_count
+                    visible_cursor[1] -= raw.dy * self.cursor_meters_per_count
+                    visible_cursor[0] = np.clip(
+                        visible_cursor[0], -self.virtual_size[0] / 2, self.virtual_size[0] / 2
+                    )
+                    visible_cursor[1] = np.clip(
+                        visible_cursor[1], -self.virtual_size[1] / 2, self.virtual_size[1] / 2
+                    )
+                    if raw_m_per_count is not None:
+                        self.current_raw_session_pos += np.array(
+                            [raw.dx * raw_m_per_count, -raw.dy * raw_m_per_count],
+                            dtype=np.float64,
+                        )
+            if visible_cursor is None:
                 self._fill_task_background()
             else:
-                self.draw_inter_trial_cursor(cursor)
+                self.draw_inter_trial_cursor(visible_cursor)
             pygame.display.flip()
             self.clock.tick(120)
+        return visible_cursor
 
-    def run_trial(self, base_template, cpi: int, block_index: int, phase: str, attempt: int,
-                  raw_mouse: RawInputMouse, logger: AsyncExperimentLogger,
-                  trial_stage: str = "task") -> TrialRunResult:
-        self._blank_interval(
+    def run_trial(
+        self,
+        base_template,
+        cpi: int,
+        block_index: int,
+        phase: str,
+        attempt: int,
+        phase_trial_index: int,
+        phase_trial_total: int,
+        raw_mouse: RawInputMouse,
+        logger: AsyncExperimentLogger,
+        trial_stage: str = "task",
+    ) -> TrialRunResult:
+        start_enabled = bool(self.exp.get("start_target_enabled", False))
+        intertrial_cursor = self._blank_interval(
             float(self.exp["inter_trial_s"]),
             raw_mouse,
             cursor=self.current_cursor.copy(),
+            cpi=cpi,
+            allow_cursor_motion=(not start_enabled or trial_stage == "start"),
         )
+        if intertrial_cursor is not None:
+            self.current_cursor = intertrial_cursor
         self.trial_id += 1
         trial_id = self.trial_id
-        start_enabled = bool(self.exp.get("start_target_enabled", False))
         if not start_enabled:
             trial_stage = "task"
         cursor = self.current_cursor.copy()
@@ -694,11 +848,21 @@ class PointAndClickExperiment:
             cursor,
             self.virtual_size,
             float(self.exp.get("start_target_radius_m", 0.006)),
+            tuple(float(v) for v in self.exp["target_radius_range_m"]),
+            preserve_sampled_task_geometry=(
+                self.exp.get("protocol_version") == "simulator_geometry_exact_v3"
+            ),
         )
         cursor_start = cursor.copy()
         raw_mouse.drain()
 
-        self.draw_trial(cursor, template, trial_stage=trial_stage)
+        self.draw_trial(
+            cursor,
+            template,
+            trial_stage=trial_stage,
+            phase_trial_index=phase_trial_index,
+            phase_trial_total=phase_trial_total,
+        )
         pygame.display.flip()
         onset_ns = time.perf_counter_ns()
         events_log = [{
@@ -892,7 +1056,13 @@ class PointAndClickExperiment:
                 outcome = "timeout"
                 end_ns = now_ns
 
-            self.draw_trial(cursor, template, trial_stage=trial_stage)
+            self.draw_trial(
+                cursor,
+                template,
+                trial_stage=trial_stage,
+                phase_trial_index=phase_trial_index,
+                phase_trial_total=phase_trial_total,
+            )
             pygame.display.flip()
             present_ns = time.perf_counter_ns()
             frame_interval_ns = present_ns - previous_present_ns
@@ -1094,7 +1264,8 @@ class PointAndClickExperiment:
                             f"The {measured_n} recorded trials will now begin.",
                             "Press SPACE to continue.",
                         ])
-                    for index, template in enumerate(phase_templates, start=1):
+                    for phase_trial_index, template in enumerate(phase_templates, start=1):
+                        phase_trial_total = len(phase_templates)
                         attempt = 1
                         while True:
                             result = None
@@ -1102,12 +1273,14 @@ class PointAndClickExperiment:
                                 if bool(self.exp.get("start_target_enabled", False)):
                                     start_result = self.run_trial(
                                         template, cpi, block_index, phase, attempt,
+                                        phase_trial_index, phase_trial_total,
                                         raw_mouse, logger, trial_stage="start",
                                     )
                                     result = start_result
                                     if start_result.valid and start_result.outcome == "success":
                                         result = self.run_trial(
                                             template, cpi, block_index, phase, attempt,
+                                            phase_trial_index, phase_trial_total,
                                             raw_mouse, logger, trial_stage="task",
                                         )
                                     valid = bool(
@@ -1120,6 +1293,7 @@ class PointAndClickExperiment:
                                 else:
                                     result = self.run_trial(
                                         template, cpi, block_index, phase, attempt,
+                                        phase_trial_index, phase_trial_total,
                                         raw_mouse, logger, trial_stage="task",
                                     )
                                     valid = result.valid

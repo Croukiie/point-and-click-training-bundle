@@ -43,9 +43,15 @@ RI_MOUSE_LEFT_BUTTON_DOWN = 0x0001
 try:
     if sys.platform != "win32":
         raise ImportError("Windows Raw Input is unavailable on this platform")
-    from .raw_input_win32 import RawInputMouse
+    from .raw_input_win32 import (
+        RawInputMouse,
+        get_os_cursor_position,
+        set_os_cursor_position,
+    )
 except (ImportError, AttributeError):
     RawInputMouse = None
+    get_os_cursor_position = None
+    set_os_cursor_position = None
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +59,7 @@ STATIC_DIR = Path(__file__).with_name("web")
 DEFAULT_CONFIG = Path(__file__).with_name("config.yaml")
 BACKEND_WINDOWS_RAW_INPUT = "windows_raw_input"
 BACKEND_BROWSER_POINTER_LOCK = "browser_pointer_lock"
+CURSOR_PRESENTATION_MODES = {"virtual_raw_input", "native_windows"}
 
 def resolve_input_backend(requested: str) -> str:
     if requested == "auto":
@@ -76,6 +83,49 @@ def safe_participant_id(value: str) -> str:
     if not cleaned:
         raise ValueError("Participant ID is required")
     return cleaned
+
+
+def normalize_native_screen_mapping(value: Any) -> dict[str, float | str]:
+    """Validate one browser-to-Windows cursor coordinate transform."""
+    if not isinstance(value, dict):
+        raise ValueError("Native cursor mapping is missing")
+    numeric = {}
+    for name in (
+        "screen_origin_x_px",
+        "screen_origin_y_px",
+        "task_offset_x_px",
+        "task_offset_y_px",
+        "task_scale_px_per_m",
+    ):
+        number = float(value.get(name))
+        if not math.isfinite(number):
+            raise ValueError(f"Native cursor mapping {name} must be finite")
+        numeric[name] = number
+    if numeric["task_scale_px_per_m"] <= 0:
+        raise ValueError("Native cursor mapping scale must be positive")
+    return {"basis": str(value.get("basis", "unknown")), **numeric}
+
+
+def map_os_cursor_to_virtual(
+    mapping: dict[str, float | str],
+    os_cursor_x_px: int,
+    os_cursor_y_px: int,
+    virtual_size_m: tuple[float, float],
+) -> np.ndarray:
+    """Map an absolute Windows cursor position into the experiment space."""
+    width_m, height_m = virtual_size_m
+    scale = float(mapping["task_scale_px_per_m"])
+    canvas_x = float(os_cursor_x_px) - float(mapping["screen_origin_x_px"])
+    canvas_y = float(os_cursor_y_px) - float(mapping["screen_origin_y_px"])
+    x_m = (canvas_x - float(mapping["task_offset_x_px"])) / scale - width_m / 2
+    y_m = height_m / 2 - (canvas_y - float(mapping["task_offset_y_px"])) / scale
+    return np.array(
+        [
+            np.clip(x_m, -width_m / 2, width_m / 2),
+            np.clip(y_m, -height_m / 2, height_m / 2),
+        ],
+        dtype=np.float64,
+    )
 
 
 def _number_pair(value: Any, label: str) -> tuple[float, float]:
@@ -154,6 +204,39 @@ def validate_fixed_display_profile(
         )
 
 
+def normalize_initial_cursor(
+    value: Any,
+    virtual_size_m: tuple[float, float],
+) -> tuple[np.ndarray, dict[str, Any]]:
+    payload = value if isinstance(value, dict) else {}
+    try:
+        cursor_x = float(payload.get("cursor_x_m", 0.0))
+        cursor_y = float(payload.get("cursor_y_m", 0.0))
+    except (TypeError, ValueError):
+        cursor_x, cursor_y = 0.0, 0.0
+    if not math.isfinite(cursor_x) or not math.isfinite(cursor_y):
+        cursor_x, cursor_y = 0.0, 0.0
+    half_width = float(virtual_size_m[0]) / 2
+    half_height = float(virtual_size_m[1]) / 2
+    cursor = np.array(
+        [
+            np.clip(cursor_x, -half_width, half_width),
+            np.clip(cursor_y, -half_height, half_height),
+        ],
+        dtype=np.float64,
+    )
+    metadata = {
+        **payload,
+        "source": str(payload.get("source", "center_fallback")),
+        "cursor_x_m": float(cursor[0]),
+        "cursor_y_m": float(cursor[1]),
+        "clipped_to_virtual_screen": bool(
+            float(cursor[0]) != cursor_x or float(cursor[1]) != cursor_y
+        ),
+    }
+    return cursor, metadata
+
+
 class WebExperimentServer:
     def __init__(
         self,
@@ -187,6 +270,11 @@ class WebExperimentServer:
         self.session_id: str | None = None
         self.participant_id: str | None = None
         self.cpi_order: list[int] = []
+        self.active_cpi: int | None = None
+        self.cpi_setting_method = "not_reported"
+        self.cursor_presentation_mode = "virtual_raw_input"
+        self.native_screen_mapping: dict[str, float | str] | None = None
+        self.cpi_confirmed_blocks: dict[int, dict[str, Any]] = {}
         self.templates = []
         self.template_by_id = {}
         self.trial: dict[str, Any] | None = None
@@ -194,6 +282,8 @@ class WebExperimentServer:
         self.display_calibration: dict[str, Any] | None = None
         self.current_cursor = np.zeros(2, dtype=np.float64)
         self.current_raw_session_pos = np.zeros(2, dtype=np.float64)
+        self.intertrial_motion_enabled = False
+        self.intertrial_motion: dict[str, Any] | None = None
 
     async def start(self, app: web.Application):
         if self.raw_mouse is not None:
@@ -243,6 +333,11 @@ class WebExperimentServer:
         self.session_id = None
         self.participant_id = None
         self.cpi_order = []
+        self.active_cpi = None
+        self.cpi_setting_method = "not_reported"
+        self.cursor_presentation_mode = "virtual_raw_input"
+        self.native_screen_mapping = None
+        self.cpi_confirmed_blocks = {}
         self.templates = []
         self.template_by_id = {}
         self.trial = None
@@ -250,6 +345,8 @@ class WebExperimentServer:
         self.display_calibration = None
         self.current_cursor = np.zeros(2, dtype=np.float64)
         self.current_raw_session_pos = np.zeros(2, dtype=np.float64)
+        self.intertrial_motion_enabled = False
+        self.intertrial_motion = None
         if self.timeout_task:
             self.timeout_task.cancel()
             self.timeout_task = None
@@ -270,6 +367,14 @@ class WebExperimentServer:
             "input_backend": self.input_backend,
             "raw_input": self.input_backend == BACKEND_WINDOWS_RAW_INPUT,
             "session_active": self.logger is not None,
+            "protocol_version": self.exp.get("protocol_version", "unversioned"),
+            "start_target_enabled": bool(
+                self.exp.get("start_target_enabled", False)
+            ),
+            "practice_trials_per_cpi": int(self.exp["practice_trials_per_cpi"]),
+            "measured_trials_per_cpi": int(self.exp["measured_trials_per_cpi"]),
+            "cpi_condition_count": len(self.exp["cpi_values"]),
+            "ab_pilot": bool(self.exp.get("cursor_ab_pilot", False)),
         })
 
     async def websocket(self, request: web.Request):
@@ -303,10 +408,26 @@ class WebExperimentServer:
             await self._start_session(data)
         elif message_type == "start_trial":
             await self._prepare_trial(data)
+        elif message_type == "confirm_cpi":
+            await self._confirm_cpi(data)
         elif message_type == "target_onset":
             await self._target_onset(data)
         elif message_type == "client_input_batch":
             await self._client_input_batch(data)
+        elif message_type == "intertrial_client_input":
+            await self._client_intertrial_input(data)
+        elif message_type == "set_initial_cursor":
+            await self._set_initial_cursor(data)
+        elif message_type == "commit_overlay_cursor":
+            await self._commit_overlay_cursor(data)
+        elif message_type == "set_intertrial_motion":
+            if data.get("enabled") is False:
+                self._finalize_intertrial_motion(
+                    next_trial_id=None,
+                    reason=str(data.get("reason", "client_disabled")),
+                )
+        elif message_type == "sync_os_cursor_to_virtual":
+            await self._sync_os_cursor_to_virtual(data)
         elif message_type == "invalidate_trial":
             if self.trial and self.trial.get("state") == "active":
                 reason = str(data.get("reason", "client_invalidated"))
@@ -363,6 +484,38 @@ class WebExperimentServer:
         participant = data.get("participant", {})
         participant_id = safe_participant_id(str(participant.get("id", "")))
         hardware = dict(data.get("hardware", {}))
+        declared_polling_hz = int(
+            hardware.get(
+                "declared_mouse_polling_hz",
+                self.config["logging"]["expected_mouse_polling_hz"],
+            )
+        )
+        if declared_polling_hz <= 0:
+            raise ValueError("Effective Raw Input rate must be positive")
+        hardware["declared_mouse_polling_hz"] = declared_polling_hz
+        cpi_setting_method = str(
+            hardware.get("cpi_setting_method", "not_reported")
+        ).strip()
+        allowed_cpi_methods = {
+            "physical_button", "mouse_software", "hardware_profile", "other"
+        }
+        if cpi_setting_method not in allowed_cpi_methods:
+            raise ValueError("Select a valid CPI setting method")
+        self.cpi_setting_method = cpi_setting_method
+        self.cpi_confirmed_blocks = {}
+        hardware["cpi_setting_method"] = cpi_setting_method
+        cursor_presentation_mode = str(
+            hardware.get("cursor_presentation_mode", "virtual_raw_input")
+        ).strip()
+        if cursor_presentation_mode not in CURSOR_PRESENTATION_MODES:
+            raise ValueError("Select a valid cursor presentation mode")
+        if (
+            cursor_presentation_mode == "native_windows"
+            and self.input_backend != BACKEND_WINDOWS_RAW_INPUT
+        ):
+            raise ValueError("The native Windows cursor condition requires Windows Raw Input")
+        self.cursor_presentation_mode = cursor_presentation_mode
+        hardware["cursor_presentation_mode"] = cursor_presentation_mode
         self.display_calibration = normalize_display_calibration(
             hardware.get("display_calibration")
         )
@@ -392,12 +545,17 @@ class WebExperimentServer:
             ),
         )
         self.template_by_id = {item.template_id: item for item in self.templates}
-        self.current_cursor = np.zeros(2, dtype=np.float64)
+        self.current_cursor, initial_cursor_metadata = normalize_initial_cursor(
+            data.get("initial_cursor"), virtual_size
+        )
         self.current_raw_session_pos = np.zeros(2, dtype=np.float64)
+        self.active_cpi = None
+        self.intertrial_motion_enabled = False
+        self.intertrial_motion = None
         output_dir = self.output_root / self.session_id
         clock = time.get_clock_info("perf_counter")
         metadata = {
-            "schema_version": 1,
+            "schema_version": 2,
             "interface": "local_html_with_python_recorder",
             "input_backend": self.input_backend,
             "session_id": self.session_id,
@@ -411,12 +569,19 @@ class WebExperimentServer:
                 "target_shape": "circle",
                 "target_motion": "fixed",
                 "first_click_ends_trial": True,
+                "initial_cursor": initial_cursor_metadata,
+                "intertrial_cursor_motion": (
+                    "Raw movement between trials is logged separately and sets "
+                    "the cursor start position of the next trial. It is excluded "
+                    "from the completed trial trajectory and its derived features."
+                ),
+                "cpi_confirmation_required": True,
                 "start_target_enabled": start_target_enabled,
                 "start_target_radius_m": float(self.exp.get("start_target_radius_m", 0.006)),
                 "trial_stage_note": (
                     "Reference/start targets are disabled. Each target trial "
-                    "starts from the virtual cursor position left by the "
-                    "previous trial."
+                    "starts from the current virtual cursor position after the "
+                    "participant's separately logged inter-trial movement."
                     if not start_target_enabled
                     else "Each logical trial is logged as a sampled start "
                     "target followed by its jointly sampled task target. After "
@@ -424,9 +589,27 @@ class WebExperimentServer:
                     "to the start-target center so simulator geometry is exact."
                 ),
                 "cursor_source": (
-                    "Windows Raw Input reconstructed by Python"
-                    if self.input_backend == BACKEND_WINDOWS_RAW_INPUT
-                    else "Browser Pointer Lock movement reconstructed by the local web client"
+                    "Windows GetCursorPos mapped to the fullscreen task; Raw Input counts saved separately"
+                    if cursor_presentation_mode == "native_windows"
+                    else (
+                        "Windows Raw Input reconstructed by Python"
+                        if self.input_backend == BACKEND_WINDOWS_RAW_INPUT
+                        else "Browser Pointer Lock movement reconstructed by the local web client"
+                    )
+                ),
+                "cursor_presentation_mode": cursor_presentation_mode,
+                "native_cursor_mapping_version": (
+                    "getcursorpos_dual_dpi_auto_v2"
+                    if cursor_presentation_mode == "native_windows" else None
+                ),
+                "cursor_presentation_note": (
+                    "The native operating-system cursor was visible. Windows "
+                    "GetCursorPos was mapped into task coordinates for the saved "
+                    "visible trajectory and hit test. Raw Input dx/dy counts and "
+                    "their reconstructed trajectory were saved separately."
+                    if cursor_presentation_mode == "native_windows"
+                    else "The controlled virtual aero-arrow cursor was rendered "
+                    "from the Python Windows Raw Input reconstruction."
                 ),
             },
             "timing": {
@@ -451,6 +634,7 @@ class WebExperimentServer:
             "event": "session_start", "session_id": self.session_id,
             "timestamp_ns": time.perf_counter_ns(),
             "input_backend": self.input_backend,
+            "cursor_presentation_mode": cursor_presentation_mode,
         })
         await self._send({
             "type": "session_ready", "session_id": self.session_id,
@@ -462,7 +646,359 @@ class WebExperimentServer:
             "display_calibration": self.display_calibration,
             "appearance": self.config["appearance"],
             "input_backend": self.input_backend,
+            "cursor_x_m": float(self.current_cursor[0]),
+            "cursor_y_m": float(self.current_cursor[1]),
         })
+
+    async def _confirm_cpi(self, data: dict[str, Any]):
+        if self.logger is None:
+            raise ValueError("Start a session before confirming CPI")
+        block_index = int(data["block_index"])
+        cpi = int(data["cpi"])
+        if block_index < 1 or block_index > len(self.cpi_order):
+            raise ValueError("Invalid CPI block index")
+        if cpi != self.cpi_order[block_index - 1]:
+            raise ValueError("CPI confirmation does not match the current block")
+        method = str(data.get("cpi_setting_method", "")).strip()
+        if method != self.cpi_setting_method:
+            raise ValueError("CPI setting method changed after session start")
+        confirmation = {
+            "cpi": cpi,
+            "cpi_setting_method": method,
+            "confirmed_server_ns": time.perf_counter_ns(),
+            "confirmed_browser_ms": data.get("browser_ms"),
+        }
+        self.cpi_confirmed_blocks[block_index] = confirmation
+        self.active_cpi = cpi
+        self.logger.submit_event({
+            "event": "cpi_confirmed",
+            "session_id": self.session_id,
+            "timestamp_ns": confirmation["confirmed_server_ns"],
+            "block_index": block_index,
+            **confirmation,
+        })
+        await self._send({
+            "type": "cpi_confirmation_saved",
+            "block_index": block_index,
+            "cpi": cpi,
+        })
+
+    def _enable_intertrial_motion(self, trial: dict[str, Any]) -> None:
+        """Start a cursor-only segment after a completed task trial."""
+        if trial.get("trial_stage") != "task" or self.active_cpi is None:
+            self.intertrial_motion_enabled = False
+            self.intertrial_motion = None
+            return
+        self.current_cursor = trial["cursor"].copy()
+        self.current_raw_session_pos = trial["raw_session_pos"].copy()
+        now_ns = time.perf_counter_ns()
+        self.intertrial_motion_enabled = True
+        self.intertrial_motion = {
+            "start_ns": now_ns,
+            "end_ns": now_ns,
+            "event_count": 0,
+            "button_down_count": 0,
+            "dx_counts": 0,
+            "dy_counts": 0,
+            "cpi": int(self.active_cpi),
+            "previous_trial_id": int(trial["trial_id"]),
+            "phase": trial.get("phase"),
+            "block_index": trial.get("block_index"),
+            "cursor_start_x_m": float(self.current_cursor[0]),
+            "cursor_start_y_m": float(self.current_cursor[1]),
+            "raw_session_start_x_m": float(self.current_raw_session_pos[0]),
+            "raw_session_start_y_m": float(self.current_raw_session_pos[1]),
+        }
+
+    def _apply_intertrial_input(
+        self,
+        *,
+        timestamp_ns: int,
+        dx_counts: int,
+        dy_counts: int,
+        button_flags: int = 0,
+        cursor_x_m: float | None = None,
+        cursor_y_m: float | None = None,
+        os_cursor_x_px: int | None = None,
+        os_cursor_y_px: int | None = None,
+    ) -> bool:
+        if (
+            not self.intertrial_motion_enabled
+            or self.intertrial_motion is None
+            or self.active_cpi is None
+        ):
+            return False
+        virtual_width, virtual_height = (
+            float(value) for value in self.config["display"]["virtual_size_m"]
+        )
+        native_cursor = self._native_cursor_position(os_cursor_x_px, os_cursor_y_px)
+        if native_cursor is not None:
+            self.current_cursor = native_cursor
+        elif cursor_x_m is None or cursor_y_m is None:
+            self.current_cursor[0] += int(dx_counts) * self.cursor_meters_per_count
+            self.current_cursor[1] -= int(dy_counts) * self.cursor_meters_per_count
+        else:
+            self.current_cursor[0] = float(cursor_x_m)
+            self.current_cursor[1] = float(cursor_y_m)
+        self.current_cursor[0] = np.clip(
+            self.current_cursor[0], -virtual_width / 2, virtual_width / 2
+        )
+        self.current_cursor[1] = np.clip(
+            self.current_cursor[1], -virtual_height / 2, virtual_height / 2
+        )
+        raw_m_per_count = physical_meters_per_count(self.active_cpi)
+        self.current_raw_session_pos += np.array(
+            [int(dx_counts) * raw_m_per_count, -int(dy_counts) * raw_m_per_count],
+            dtype=np.float64,
+        )
+        motion = self.intertrial_motion
+        motion["end_ns"] = int(timestamp_ns)
+        motion["event_count"] += 1
+        motion["dx_counts"] += int(dx_counts)
+        motion["dy_counts"] += int(dy_counts)
+        if int(button_flags) & RI_MOUSE_LEFT_BUTTON_DOWN:
+            motion["button_down_count"] += 1
+        return True
+
+    def _finalize_intertrial_motion(
+        self,
+        *,
+        next_trial_id: int | None,
+        reason: str,
+    ) -> None:
+        motion = self.intertrial_motion
+        if motion is not None and motion["event_count"] > 0 and self.logger is not None:
+            self.logger.submit_event({
+                "event": "intertrial_movement",
+                "session_id": self.session_id,
+                **motion,
+                "next_trial_id": next_trial_id,
+                "reason": reason,
+                "duration_s": max(0.0, (motion["end_ns"] - motion["start_ns"]) / 1e9),
+                "cursor_end_x_m": float(self.current_cursor[0]),
+                "cursor_end_y_m": float(self.current_cursor[1]),
+                "raw_session_end_x_m": float(self.current_raw_session_pos[0]),
+                "raw_session_end_y_m": float(self.current_raw_session_pos[1]),
+                "input_backend": self.input_backend,
+            })
+        self.intertrial_motion_enabled = False
+        self.intertrial_motion = None
+
+    async def _client_intertrial_input(self, data: dict[str, Any]) -> None:
+        if self.input_backend != BACKEND_BROWSER_POINTER_LOCK:
+            return
+        applied = self._apply_intertrial_input(
+            timestamp_ns=time.perf_counter_ns(),
+            dx_counts=int(round(float(data.get("dx_counts", 0)))),
+            dy_counts=int(round(float(data.get("dy_counts", 0)))),
+            cursor_x_m=data.get("cursor_x_m"),
+            cursor_y_m=data.get("cursor_y_m"),
+        )
+        if applied:
+            await self._send({
+                "type": "intertrial_cursor",
+                "cursor_x_m": float(self.current_cursor[0]),
+                "cursor_y_m": float(self.current_cursor[1]),
+            })
+
+    async def _set_initial_cursor(self, data: dict[str, Any]) -> None:
+        """Position the cursor once, from the first fullscreen start click."""
+        if self.logger is None or self.trial is not None or self.trial_sequence != 0:
+            return
+        previous_cursor = self.current_cursor.copy()
+        cursor, cursor_metadata = normalize_initial_cursor(
+            {
+                "source": data.get("source", "first_fullscreen_start_button"),
+                "cursor_x_m": data.get("cursor_x_m"),
+                "cursor_y_m": data.get("cursor_y_m"),
+            },
+            tuple(float(value) for value in self.config["display"]["virtual_size_m"]),
+        )
+        self.current_cursor = cursor
+        self.logger.submit_event({
+            "event": "initial_virtual_cursor_positioned",
+            "session_id": self.session_id,
+            "timestamp_ns": time.perf_counter_ns(),
+            "browser_ms": data.get("browser_ms"),
+            "source": cursor_metadata["source"],
+            "previous_cursor_x_m": float(previous_cursor[0]),
+            "previous_cursor_y_m": float(previous_cursor[1]),
+            "cursor_x_m": float(cursor[0]),
+            "cursor_y_m": float(cursor[1]),
+            "input_backend": self.input_backend,
+        })
+
+    def _select_native_screen_mapping(
+        self,
+        payload: Any,
+        browser_cursor: np.ndarray,
+    ) -> tuple[dict[str, float | str] | None, dict[str, Any]]:
+        """Choose logical or physical pixels using the live OS cursor position."""
+        if getattr(self, "cursor_presentation_mode", "virtual_raw_input") != "native_windows":
+            return None, {}
+        if not isinstance(payload, dict):
+            raise ValueError("Native Windows cursor mapping was not provided")
+        candidates = []
+        for basis in ("logical", "physical"):
+            if basis not in payload:
+                continue
+            candidate = normalize_native_screen_mapping(payload[basis])
+            candidate["basis"] = basis
+            candidates.append(candidate)
+        if not candidates:
+            raise ValueError("No valid native Windows cursor mapping was provided")
+        os_position = get_os_cursor_position() if get_os_cursor_position else None
+        if os_position is None:
+            selected = next(
+                (item for item in candidates if item["basis"] == "physical"),
+                candidates[0],
+            )
+            return selected, {
+                "selection_method": "physical_fallback_no_os_position",
+                "selection_error_m": None,
+                "os_cursor_x_px": None,
+                "os_cursor_y_px": None,
+            }
+        virtual_size = tuple(
+            float(value) for value in self.config["display"]["virtual_size_m"]
+        )
+        scored = []
+        for candidate in candidates:
+            mapped = map_os_cursor_to_virtual(
+                candidate, os_position[0], os_position[1], virtual_size
+            )
+            scored.append((float(np.linalg.norm(mapped - browser_cursor)), candidate, mapped))
+        error, selected, mapped = min(scored, key=lambda item: item[0])
+        return selected, {
+            "selection_method": "closest_to_browser_click",
+            "selection_error_m": error,
+            "os_cursor_x_px": int(os_position[0]),
+            "os_cursor_y_px": int(os_position[1]),
+            "mapped_cursor_x_m": float(mapped[0]),
+            "mapped_cursor_y_m": float(mapped[1]),
+        }
+
+    def _native_cursor_position(
+        self,
+        os_cursor_x_px: int | None,
+        os_cursor_y_px: int | None,
+    ) -> np.ndarray | None:
+        if (
+            getattr(self, "cursor_presentation_mode", "virtual_raw_input") != "native_windows"
+            or getattr(self, "native_screen_mapping", None) is None
+            or os_cursor_x_px is None
+            or os_cursor_y_px is None
+        ):
+            return None
+        return map_os_cursor_to_virtual(
+            self.native_screen_mapping,
+            int(os_cursor_x_px),
+            int(os_cursor_y_px),
+            tuple(float(v) for v in self.config["display"]["virtual_size_m"]),
+        )
+
+    async def _commit_overlay_cursor(self, data: dict[str, Any]) -> None:
+        """Commit the custom overlay cursor as the next trial's start position."""
+        if self.logger is None:
+            raise ValueError("Start a session before committing the cursor")
+        if self.trial is not None and self.trial.get("state") == "active":
+            raise ValueError("The cursor cannot be committed during an active trial")
+
+        self._finalize_intertrial_motion(
+            next_trial_id=None,
+            reason="overlay_cursor_commit",
+        )
+        if self.raw_mouse is not None:
+            self.raw_mouse.drain()
+
+        previous_cursor = self.current_cursor.copy()
+        cursor, cursor_metadata = normalize_initial_cursor(
+            {
+                "source": data.get("source", "overlay_cursor_click"),
+                "cursor_x_m": data.get("cursor_x_m"),
+                "cursor_y_m": data.get("cursor_y_m"),
+            },
+            tuple(float(value) for value in self.config["display"]["virtual_size_m"]),
+        )
+        mapping_details: dict[str, Any] = {}
+        cursor_presentation_mode = getattr(
+            self, "cursor_presentation_mode", "virtual_raw_input"
+        )
+        if cursor_presentation_mode == "native_windows":
+            self.native_screen_mapping, mapping_details = self._select_native_screen_mapping(
+                data.get("native_screen_mappings"), cursor
+            )
+            if mapping_details.get("mapped_cursor_x_m") is not None:
+                cursor = np.array(
+                    [
+                        mapping_details["mapped_cursor_x_m"],
+                        mapping_details["mapped_cursor_y_m"],
+                    ],
+                    dtype=np.float64,
+                )
+        self.current_cursor = cursor
+        self.logger.submit_event({
+            "event": "overlay_cursor_committed",
+            "session_id": self.session_id,
+            "timestamp_ns": time.perf_counter_ns(),
+            "browser_ms": data.get("browser_ms"),
+            "request_id": str(data.get("request_id", "")),
+            "source": cursor_metadata["source"],
+            "previous_cursor_x_m": float(previous_cursor[0]),
+            "previous_cursor_y_m": float(previous_cursor[1]),
+            "cursor_x_m": float(cursor[0]),
+            "cursor_y_m": float(cursor[1]),
+            "clipped_to_virtual_screen": cursor_metadata["clipped_to_virtual_screen"],
+            "input_backend": self.input_backend,
+            "cursor_presentation_mode": cursor_presentation_mode,
+            "native_screen_mapping": getattr(self, "native_screen_mapping", None),
+            **mapping_details,
+        })
+        await self._send({
+            "type": "overlay_cursor_committed",
+            "request_id": str(data.get("request_id", "")),
+            "cursor_x_m": float(cursor[0]),
+            "cursor_y_m": float(cursor[1]),
+        })
+
+    async def _sync_os_cursor_to_virtual(self, data: dict[str, Any]) -> None:
+        if (
+            self.input_backend != BACKEND_WINDOWS_RAW_INPUT
+            or set_os_cursor_position is None
+            or self.display_calibration is None
+        ):
+            return
+        if self.trial is not None and self.trial.get("state") == "active":
+            return
+        resolution_width, resolution_height = (
+            int(value) for value in self.display_calibration["resolution_px"]
+        )
+        virtual_width, virtual_height = (
+            float(value) for value in self.config["display"]["virtual_size_m"]
+        )
+        try:
+            origin_x = int(round(float(data.get("screen_origin_x_px", 0))))
+            origin_y = int(round(float(data.get("screen_origin_y_px", 0))))
+        except (TypeError, ValueError):
+            origin_x, origin_y = 0, 0
+        x_fraction = np.clip(self.current_cursor[0] / virtual_width + 0.5, 0.0, 1.0)
+        y_fraction = np.clip(0.5 - self.current_cursor[1] / virtual_height, 0.0, 1.0)
+        x_px = origin_x + round(float(x_fraction) * max(0, resolution_width - 1))
+        y_px = origin_y + round(float(y_fraction) * max(0, resolution_height - 1))
+        positioned = set_os_cursor_position(x_px, y_px)
+        if self.logger is not None:
+            self.logger.submit_event({
+                "event": "os_cursor_synced_to_virtual",
+                "session_id": self.session_id,
+                "timestamp_ns": time.perf_counter_ns(),
+                "reason": str(data.get("reason", "pointer_lock_exit")),
+                "cursor_x_m": float(self.current_cursor[0]),
+                "cursor_y_m": float(self.current_cursor[1]),
+                "os_cursor_x_px": x_px,
+                "os_cursor_y_px": y_px,
+                "positioned": positioned,
+                "input_backend": self.input_backend,
+            })
 
     async def _prepare_trial(self, data: dict[str, Any]):
         if self.logger is None:
@@ -475,6 +1011,17 @@ class WebExperimentServer:
         cpi = int(data["cpi"])
         if cpi not in self.cpi_order:
             raise ValueError("Invalid CPI condition")
+        block_index = int(data["block_index"])
+        confirmation = self.cpi_confirmed_blocks.get(block_index)
+        if (
+            data.get("cpi_confirmed") is not True
+            or confirmation is None
+            or int(confirmation["cpi"]) != cpi
+        ):
+            raise ValueError("Confirm the requested CPI setting before starting this block")
+        cpi_setting_method = str(data.get("cpi_setting_method", "")).strip()
+        if cpi_setting_method != self.cpi_setting_method:
+            raise ValueError("CPI setting method does not match the session metadata")
         phase = str(data["phase"])
         if phase not in {"practice", "measured"}:
             raise ValueError("Invalid trial phase")
@@ -484,6 +1031,10 @@ class WebExperimentServer:
         if not bool(self.exp.get("start_target_enabled", False)):
             trial_stage = "task"
         base_template = self.template_by_id[template_id]
+        self._finalize_intertrial_motion(
+            next_trial_id=self.trial_sequence + 1,
+            reason="next_trial_started",
+        )
         self.trial_sequence += 1
         cursor = self.current_cursor.copy()
         template = make_trial_stage_template(
@@ -492,6 +1043,10 @@ class WebExperimentServer:
             cursor,
             tuple(float(v) for v in self.config["display"]["virtual_size_m"]),
             float(self.exp.get("start_target_radius_m", 0.006)),
+            tuple(float(v) for v in self.exp["target_radius_range_m"]),
+            preserve_sampled_task_geometry=(
+                self.exp.get("protocol_version") == "simulator_geometry_exact_v3"
+            ),
         )
         target = np.array([template.target_x_m, template.target_y_m], dtype=np.float64)
         if self.raw_mouse is not None:
@@ -500,8 +1055,11 @@ class WebExperimentServer:
             "state": "ready", "trial_id": self.trial_sequence,
             "template": template, "base_template": base_template,
             "phase": phase, "trial_stage": trial_stage, "cpi": cpi,
-            "block_index": int(data["block_index"]), "attempt": int(data.get("attempt", 1)),
+            "block_index": block_index, "attempt": int(data.get("attempt", 1)),
+            "cpi_setting_method": cpi_setting_method, "cpi_confirmed": True,
             "cursor": cursor, "cursor_start": cursor.copy(), "target": target,
+            "raw_reconstructed_cursor": cursor.copy(),
+            "native_raw_alignment_errors": [],
             "path_length": 0.0, "minimum_distance": float(np.linalg.norm(cursor - target)),
             "first_movement_ns": None, "previous_raw_ns": None,
             "previous_cursor_velocity": None, "previous_raw_velocity": None,
@@ -597,13 +1155,29 @@ class WebExperimentServer:
         virtual_width, virtual_height = (
             float(v) for v in self.config["display"]["virtual_size_m"]
         )
+        raw_reconstructed_delta = np.array(
+            [
+                float(dx_counts) * self.cursor_meters_per_count,
+                -float(dy_counts) * self.cursor_meters_per_count,
+            ],
+            dtype=np.float64,
+        )
+        trial["raw_reconstructed_cursor"] += raw_reconstructed_delta
+        trial["raw_reconstructed_cursor"][0] = np.clip(
+            trial["raw_reconstructed_cursor"][0], -virtual_width / 2, virtual_width / 2
+        )
+        trial["raw_reconstructed_cursor"][1] = np.clip(
+            trial["raw_reconstructed_cursor"][1], -virtual_height / 2, virtual_height / 2
+        )
+        native_cursor = self._native_cursor_position(os_cursor_x_px, os_cursor_y_px)
 
-        if cursor_x_m is not None and cursor_y_m is not None:
+        if native_cursor is not None:
+            trial["cursor"] = native_cursor
+        elif cursor_x_m is not None and cursor_y_m is not None:
             trial["cursor"][0] = float(cursor_x_m)
             trial["cursor"][1] = float(cursor_y_m)
         else:
-            trial["cursor"][0] += dx_counts * self.cursor_meters_per_count
-            trial["cursor"][1] -= dy_counts * self.cursor_meters_per_count
+            trial["cursor"] = trial["raw_reconstructed_cursor"].copy()
 
         trial["cursor"][0] = np.clip(trial["cursor"][0], -virtual_width / 2, virtual_width / 2)
         trial["cursor"][1] = np.clip(trial["cursor"][1], -virtual_height / 2, virtual_height / 2)
@@ -653,6 +1227,12 @@ class WebExperimentServer:
         raw_angle = angle_from_delta(raw_delta)
         heading_error = signed_angle_error(cursor_heading, target_angle)
         inside = distance <= trial["template"].target_radius_m
+        native_raw_alignment_error = (
+            float(np.linalg.norm(trial["cursor"] - trial["raw_reconstructed_cursor"]))
+            if native_cursor is not None else None
+        )
+        if native_raw_alignment_error is not None:
+            trial["native_raw_alignment_errors"].append(native_raw_alignment_error)
         trial["event_index"] += 1
 
         row = {
@@ -691,6 +1271,14 @@ class WebExperimentServer:
             "cursor_path_length_m": float(trial["path_length"]),
             "cursor_x_m": float(trial["cursor"][0]),
             "cursor_y_m": float(trial["cursor"][1]),
+            "raw_reconstructed_cursor_x_m": float(trial["raw_reconstructed_cursor"][0]),
+            "raw_reconstructed_cursor_y_m": float(trial["raw_reconstructed_cursor"][1]),
+            "native_raw_alignment_error_m": native_raw_alignment_error,
+            "cursor_coordinate_source": (
+                "windows_getcursorpos"
+                if native_cursor is not None
+                else "raw_input_reconstruction"
+            ),
             "velocity_x_m_s": float(velocity[0]),
             "velocity_y_m_s": float(velocity[1]),
             "speed_m_s": float(np.linalg.norm(velocity)),
@@ -763,6 +1351,22 @@ class WebExperimentServer:
             raw_events = self.raw_mouse.drain()
             trial = self.trial
             if not trial or trial.get("state") != "active":
+                moved_between_trials = False
+                for raw in raw_events:
+                    moved_between_trials = self._apply_intertrial_input(
+                        timestamp_ns=raw.timestamp_ns,
+                        dx_counts=raw.dx,
+                        dy_counts=raw.dy,
+                        button_flags=raw.button_flags,
+                        os_cursor_x_px=raw.os_cursor_x_px,
+                        os_cursor_y_px=raw.os_cursor_y_px,
+                    ) or moved_between_trials
+                if moved_between_trials:
+                    await self._send({
+                        "type": "intertrial_cursor",
+                        "cursor_x_m": float(self.current_cursor[0]),
+                        "cursor_y_m": float(self.current_cursor[1]),
+                    })
                 continue
             onset_ns = trial["onset_ns"]
             batch = []
@@ -825,6 +1429,7 @@ class WebExperimentServer:
         trial["outcome"] = outcome
         trial["valid"] = valid
         trial["state"] = "awaiting_client_data"
+        self._enable_intertrial_motion(trial)
         trial["events"].append({
             "event": "trial_end", "session_id": self.session_id,
             "trial_id": trial["trial_id"], "phase": trial["phase"],
@@ -892,6 +1497,9 @@ class WebExperimentServer:
                 "document_visible": bool(frame.get("visible", True)),
                 "pointer_locked": bool(frame.get("pointer_locked", False)),
                 "raw_event_sequence": int(frame.get("raw_sequence", 0)),
+                "native_cursor_x_m": frame.get("native_cursor_x_m"),
+                "native_cursor_y_m": frame.get("native_cursor_y_m"),
+                "native_alignment_error_m": frame.get("native_alignment_error_m"),
             })
         template = trial["template"]
         click_pos = trial["click_pos"]
@@ -945,13 +1553,33 @@ class WebExperimentServer:
             cursor_points,
             target_position=[template.target_x_m, template.target_y_m],
         )
+        native_alignment_errors = np.asarray(
+            [
+                float(frame["native_alignment_error_m"])
+                for frame in browser_frames
+                if frame.get("native_alignment_error_m") is not None
+                and math.isfinite(float(frame["native_alignment_error_m"]))
+            ],
+            dtype=np.float64,
+        )
+        native_raw_alignment_errors = np.asarray(
+            trial.get("native_raw_alignment_errors", []), dtype=np.float64
+        )
         summary = {
             "session_id": self.session_id, "trial_id": trial["trial_id"],
             "template_id": template.template_id, "phase": trial["phase"],
             "trial_stage": trial["trial_stage"],
             "block_index": trial["block_index"], "cpi": trial["cpi"],
+            "cpi_setting_method": trial["cpi_setting_method"],
+            "cpi_confirmed": trial["cpi_confirmed"],
             "mousepad_condition": self.mousepad_condition,
             "input_backend": self.input_backend,
+            "cursor_presentation_mode": self.cursor_presentation_mode,
+            "cursor_coordinate_source": (
+                "windows_getcursorpos"
+                if self.cursor_presentation_mode == "native_windows"
+                else "raw_input_reconstruction"
+            ),
             "attempt": trial["attempt"], "valid": trial["valid"],
             "invalid_reason": "" if trial["valid"] else trial["outcome"],
             "outcome": trial["outcome"], "success": trial["outcome"] == "success",
@@ -1003,6 +1631,32 @@ class WebExperimentServer:
             "mean_polling_interval_ns": mean_polling_interval,
             "std_polling_interval_ns": std_polling_interval,
             "max_polling_gap_ns": max_polling_gap,
+            "native_alignment_sample_count": int(native_alignment_errors.size),
+            "native_alignment_mean_m": (
+                float(np.mean(native_alignment_errors))
+                if native_alignment_errors.size else None
+            ),
+            "native_alignment_p95_m": (
+                float(np.percentile(native_alignment_errors, 95))
+                if native_alignment_errors.size else None
+            ),
+            "native_alignment_max_m": (
+                float(np.max(native_alignment_errors))
+                if native_alignment_errors.size else None
+            ),
+            "native_raw_alignment_sample_count": int(native_raw_alignment_errors.size),
+            "native_raw_alignment_mean_m": (
+                float(np.mean(native_raw_alignment_errors))
+                if native_raw_alignment_errors.size else None
+            ),
+            "native_raw_alignment_p95_m": (
+                float(np.percentile(native_raw_alignment_errors, 95))
+                if native_raw_alignment_errors.size else None
+            ),
+            "native_raw_alignment_max_m": (
+                float(np.max(native_raw_alignment_errors))
+                if native_raw_alignment_errors.size else None
+            ),
             **curvature_features,
             "browser_first_movement_ms": client.get("first_movement_ms"),
             "browser_click_ms": client.get("click_ms"), "browser_end_ms": client.get("end_ms"),
@@ -1043,7 +1697,14 @@ class WebExperimentServer:
             "rendered_task_height_physical_m": client.get("rendered_task_height_physical_m"),
             "rendered_target_radius_physical_m": client.get("rendered_target_radius_physical_m"),
         }
-        next_cursor = trial["cursor"].copy()
+        if trial["trial_stage"] == "task":
+            # ``_finish_trial`` initialized the inter-trial cursor at the click
+            # endpoint; any movement received during saving has already moved it.
+            next_cursor = self.current_cursor.copy()
+            next_raw_session_pos = self.current_raw_session_pos.copy()
+        else:
+            next_cursor = trial["cursor"].copy()
+            next_raw_session_pos = trial["raw_session_pos"].copy()
         if (
             trial["valid"]
             and trial["trial_stage"] == "start"
@@ -1070,7 +1731,7 @@ class WebExperimentServer:
         outcome = trial["outcome"]
         valid = trial["valid"]
         self.current_cursor = next_cursor
-        self.current_raw_session_pos = trial["raw_session_pos"].copy()
+        self.current_raw_session_pos = next_raw_session_pos
         self.trial = None
         await self._send({
             "type": "trial_saved",
@@ -1122,6 +1783,14 @@ def build_parser():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument(
+        "--cursor-ab-pilot",
+        action="store_true",
+        help=(
+            "Run a short cursor-presentation diagnostic with 3 practice and "
+            "20 measured trials per CPI. The default full protocol is unchanged."
+        ),
+    )
+    parser.add_argument(
         "--mousepad-condition",
         choices=("firm", "soft", "glass", "unspecified"),
         default="unspecified",
@@ -1141,12 +1810,18 @@ def build_parser():
 def main():
     args = build_parser().parse_args()
     config = load_config(args.config)
+    if args.cursor_ab_pilot:
+        config["experiment"]["practice_trials_per_cpi"] = 3
+        config["experiment"]["measured_trials_per_cpi"] = 20
+        config["experiment"]["cursor_ab_pilot"] = True
     url = f"http://{args.host}:{args.port}"
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     print(f"Point-and-click experiment: {url}")
     print(f"Input backend: {resolve_input_backend(args.input_backend)}")
     print(f"Mousepad condition: {args.mousepad_condition}")
+    if args.cursor_ab_pilot:
+        print("Cursor A/B pilot: 3 practice + 20 measured trials per CPI")
     print("Keep this window open during data collection. Press Ctrl+C to stop.")
     web.run_app(
         create_app(

@@ -2,7 +2,8 @@ param(
     [ValidateSet("firm", "soft", "glass", "unspecified")]
     [string]$MousepadCondition = "unspecified",
     [ValidateRange(1024, 65535)]
-    [int]$Port = 8765
+    [int]$Port = 8765,
+    [switch]$CursorABPilot
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,8 +23,14 @@ Set-Location -LiteralPath $BundleRoot
 if ($LASTEXITCODE -ne 0) {
     throw "The local Python installation is missing an experiment dependency. Follow HUMAN_EXPERIMENT_GUIDE.md first."
 }
-& $ExperimentPython -m src.experiment.web_experiment_server `
-    --input-backend windows_raw_input `
-    --mousepad-condition $MousepadCondition `
-    --port $Port
+$ServerArgs = @(
+    "-m", "src.experiment.web_experiment_server",
+    "--input-backend", "windows_raw_input",
+    "--mousepad-condition", $MousepadCondition,
+    "--port", "$Port"
+)
+if ($CursorABPilot) {
+    $ServerArgs += "--cursor-ab-pilot"
+}
+& $ExperimentPython @ServerArgs
 exit $LASTEXITCODE

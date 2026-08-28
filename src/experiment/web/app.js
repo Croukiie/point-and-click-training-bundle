@@ -16,6 +16,7 @@ const els = {
   start: document.querySelector("#start-button"),
   setupError: document.querySelector("#setup-error"),
   displayCheck: document.querySelector("#display-check"),
+  configuredTrialCount: document.querySelector("#configured-trial-count"),
   canvas: document.querySelector("#task-canvas"),
   overlay: document.querySelector("#overlay"),
   overlayKicker: document.querySelector("#overlay-kicker"),
@@ -24,10 +25,17 @@ const els = {
   overlayButton: document.querySelector("#overlay-button"),
   overlaySecondaryButton: document.querySelector("#overlay-secondary-button"),
   overlayDangerButton: document.querySelector("#overlay-danger-button"),
+  uiCursor: document.querySelector("#ui-cursor"),
   fatal: document.querySelector("#fatal"),
 };
 
 const ctx = els.canvas.getContext("2d", { alpha: false, desynchronized: true });
+
+// Native 32 px frame extracted losslessly from the user-provided aero_arrow.cur.
+// The CUR hotspot is (0, 0), matching the virtual cursor coordinates.
+const aeroArrowCursor = new Image(32, 32);
+aeroArrowCursor.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAA/klEQVR42u3VsWoCQRgE4Pl/XQgIt3dCTslbWN1T5BXzErlSLewCaYJw2kqKEyshJzFYjIWaiCTGwtsF2Sm3mY9hlwUkKtWkGbxFolI0HvhDSFSSpD/EHuAPcQTwgzgBuEf8AnCL+APgDnEGsP7aOECcAZDkcvlRM+IfAEnO54saERcASHI2e6doPLh2ffP0YLVao9W6AwBoIxk6fQVV9Ukgqp7z/uEV9LV5/+gEcChXk2Yidvw9u9hx7YDjcgAQTfLR6GW/QpLXusLuYv2UA4CaNIPYCUkWxZQi9s39J6lJXhTT3QoSvzoHNEz3AWInou0nNZ0eQkJCQkJCbjVbxl9Gb4rWTdMAAAAASUVORK5CYII=";
+els.uiCursor.src = aeroArrowCursor.src;
 
 const state = {
   ws: null,
@@ -44,9 +52,12 @@ const state = {
   attempt: 1,
   current: null,
   waitingForSave: false,
+  intertrialMotionEnabled: false,
   pointerLockRawRequested: false,
   pointerLockRawGranted: false,
+  initialTrialCursorSet: false,
   overlayActions: { primary: null, secondary: null, danger: null },
+  cursorCommitRequests: new Map(),
   nextTrialTimer: null,
   paused: false,
   pauseAfterInvalidation: false,
@@ -54,10 +65,15 @@ const state = {
   background: "rgb(24, 27, 33)",
   displayCalibration: null,
   inputBackend: "windows_raw_input",
+  cpiConfirmed: false,
+  cpiSettingMethod: "physical_button",
+  cursorPresentationMode: "virtual_raw_input",
   clientInputQueue: [],
   clientInputFlushTimer: null,
   lastCursorX: 0,
   lastCursorY: 0,
+  lastUiPointer: null,
+  nativePointerVirtual: null,
 };
 
 function send(payload) {
@@ -77,6 +93,7 @@ function connect() {
     els.connection.classList.add("connected");
     els.connection.lastElementChild.textContent = "Local recorder connected";
     updateDisplayCheck();
+    refreshServerProtocolSummary();
     els.start.disabled = false;
   });
   ws.addEventListener("close", () => {
@@ -92,6 +109,22 @@ function connect() {
     els.setupError.textContent = "Could not connect to the Python recorder. Keep the server window open.";
   });
   ws.addEventListener("message", event => handleServerMessage(JSON.parse(event.data)));
+}
+
+async function refreshServerProtocolSummary() {
+  try {
+    const response = await fetch("/api/health", { cache: "no-store" });
+    if (!response.ok) return;
+    const health = await response.json();
+    const recordedPerCpi = Number(health.measured_trials_per_cpi);
+    const cpiConditions = Number(health.cpi_condition_count);
+    if (Number.isFinite(recordedPerCpi) && Number.isFinite(cpiConditions)) {
+      const total = recordedPerCpi * cpiConditions;
+      els.configuredTrialCount.textContent = health.ab_pilot
+        ? `${total} total (A/B pilot)`
+        : `${total} total`;
+    }
+  } catch (_) {}
 }
 
 function optionalNumber(selector) {
@@ -219,8 +252,15 @@ function applyFixedDisplayProfile() {
 function participantPayload() {
   const displayCalibration = displayCalibrationPayload();
   state.displayCalibration = displayCalibration;
+  state.cpiSettingMethod = document.querySelector("#cpi-setting-method").value;
+  state.cursorPresentationMode = document.querySelector("#cursor-presentation-mode").value;
   return {
     type: "hello",
+    initial_cursor: {
+      source: "awaiting_first_fullscreen_start_click",
+      cursor_x_m: 0,
+      cursor_y_m: 0,
+    },
     participant: {
       id: document.querySelector("#participant-id").value.trim(),
       age: optionalNumber("#age"),
@@ -231,8 +271,12 @@ function participantPayload() {
     },
     hardware: {
       mouse_model: document.querySelector("#mouse-model").value.trim() || "not_reported",
+      declared_mouse_polling_hz: requiredPositiveInteger("#mouse-polling-hz", "Effective Raw Input rate"),
+      mouse_polling_rate_basis: "independent_windows_raw_input_diagnostic",
+      cursor_presentation_mode: state.cursorPresentationMode,
       pointer_acceleration: document.querySelector("#pointer-acceleration").value,
       windows_pointer_speed: document.querySelector("#pointer-speed").value.trim() || "not_reported",
+      cpi_setting_method: state.cpiSettingMethod,
       declared_resolution_px: displayCalibration.resolution_px,
       declared_refresh_hz: displayCalibration.refresh_hz,
       display_calibration: displayCalibration,
@@ -279,8 +323,116 @@ function restoreSetupView() {
     document.exitFullscreen().catch(() => {});
   }
   els.experiment.classList.add("hidden");
+  els.uiCursor.classList.add("hidden");
   els.setup.classList.remove("hidden");
 }
+
+function overlayPointerTrackingIsActive() {
+  return Boolean(
+    state.session
+    && !els.experiment.classList.contains("hidden")
+    && !els.overlay.classList.contains("hidden")
+    && document.pointerLockElement !== els.canvas
+  );
+}
+
+function overlayCursorIsActive() {
+  return overlayPointerTrackingIsActive() && !usesNativeWindowsCursorMode();
+}
+
+function positionCustomCursor(clientX, clientY) {
+  els.uiCursor.style.transform = `translate3d(${clientX}px, ${clientY}px, 0)`;
+  els.uiCursor.classList.remove("hidden");
+}
+
+function virtualCursorClientPosition() {
+  const rect = els.canvas.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return null;
+  const point = pointToCanvas(state.lastCursorX, state.lastCursorY);
+  return {
+    clientX: rect.left + point[0] * rect.width / els.canvas.width,
+    clientY: rect.top + point[1] * rect.height / els.canvas.height,
+  };
+}
+
+function clientPointToVirtual(clientX, clientY) {
+  const rect = els.canvas.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return null;
+  const canvasX = (clientX - rect.left) * els.canvas.width / rect.width;
+  const canvasY = (clientY - rect.top) * els.canvas.height / rect.height;
+  const transform = taskTransform();
+  return {
+    x: clamp(
+      (canvasX - transform.offsetX) / transform.scale - transform.widthM / 2,
+      -transform.widthM / 2,
+      transform.widthM / 2
+    ),
+    y: clamp(
+      transform.heightM / 2 - (canvasY - transform.offsetY) / transform.scale,
+      -transform.heightM / 2,
+      transform.heightM / 2
+    ),
+  };
+}
+
+function updateCustomCursorVisibility() {
+  if (!overlayCursorIsActive()) {
+    els.uiCursor.classList.add("hidden");
+    return;
+  }
+  const position = !state.initialTrialCursorSet && state.lastUiPointer
+    ? state.lastUiPointer
+    : virtualCursorClientPosition();
+  if (position) positionCustomCursor(position.clientX, position.clientY);
+}
+
+function updateOverlayCursorFromClientPoint(clientX, clientY) {
+  if (!overlayPointerTrackingIsActive()) return;
+  const rect = els.canvas.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return;
+  const canvasX = (clientX - rect.left) * els.canvas.width / rect.width;
+  const canvasY = (clientY - rect.top) * els.canvas.height / rect.height;
+  const transform = taskTransform();
+  state.lastCursorX = clamp(
+    (canvasX - transform.offsetX) / transform.scale - transform.widthM / 2,
+    -transform.widthM / 2,
+    transform.widthM / 2
+  );
+  state.lastCursorY = clamp(
+    transform.heightM / 2 - (canvasY - transform.offsetY) / transform.scale,
+    -transform.heightM / 2,
+    transform.heightM / 2
+  );
+  if (!usesNativeWindowsCursorMode()) positionCustomCursor(clientX, clientY);
+}
+
+document.addEventListener("pointerdown", event => {
+  if (document.pointerLockElement === els.canvas) return;
+  updateOverlayCursorFromClientPoint(event.clientX, event.clientY);
+  state.lastUiPointer = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    screenX: event.screenX,
+    screenY: event.screenY,
+  };
+  if (usesNativeWindowsCursorMode()) {
+    state.nativePointerVirtual = clientPointToVirtual(event.clientX, event.clientY);
+  }
+}, true);
+
+document.addEventListener("pointermove", event => {
+  if (document.pointerLockElement === els.canvas) return;
+  updateOverlayCursorFromClientPoint(event.clientX, event.clientY);
+  state.lastUiPointer = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    screenX: event.screenX,
+    screenY: event.screenY,
+  };
+  if (usesNativeWindowsCursorMode() && state.current?.recording) {
+    state.nativePointerVirtual = clientPointToVirtual(event.clientX, event.clientY);
+  }
+}, true);
 
 els.form.addEventListener("submit", async event => {
   event.preventDefault();
@@ -310,9 +462,15 @@ function handleServerMessage(message) {
       state.templates = message.templates;
       state.cpiOrder = message.cpi_order;
       state.inputBackend = message.input_backend || "windows_raw_input";
+      state.cursorPresentationMode = message.cursor_presentation_mode || state.cursorPresentationMode;
+      els.experiment.classList.toggle(
+        "native-windows-cursor",
+        usesNativeWindowsCursorMode()
+      );
+      state.cpiConfirmed = false;
       state.background = `rgb(${state.appearance.background_rgb.join(",")})`;
-      state.lastCursorX = 0;
-      state.lastCursorY = 0;
+      state.lastCursorX = Number.isFinite(message.cursor_x_m) ? message.cursor_x_m : 0;
+      state.lastCursorY = Number.isFinite(message.cursor_y_m) ? message.cursor_y_m : 0;
       els.setup.classList.add("hidden");
       els.experiment.classList.remove("hidden");
       resizeCanvas();
@@ -328,6 +486,12 @@ function handleServerMessage(message) {
       break;
     case "raw_batch":
       onRawBatch(message);
+      break;
+    case "intertrial_cursor":
+      onIntertrialCursor(message);
+      break;
+    case "overlay_cursor_committed":
+      onOverlayCursorCommitted(message);
       break;
     case "trial_result":
       onTrialResult(message);
@@ -391,6 +555,8 @@ function showOverlay({
     return p;
   }));
   els.overlay.classList.remove("hidden");
+  clearCanvas();
+  updateCustomCursorVisibility();
 }
 
 els.overlayButton.addEventListener("click", async () => {
@@ -443,11 +609,14 @@ document.addEventListener("keydown", event => {
 document.addEventListener("mousemove", event => {
   if (!usesBrowserPointerLockBackend()) return;
   if (document.pointerLockElement !== els.canvas) return;
-  if (!state.current?.active) return;
-  queueClientInputEvent({
-    movementX: event.movementX || 0,
-    movementY: event.movementY || 0,
-  });
+  if (state.current?.active) {
+    queueClientInputEvent({
+      movementX: event.movementX || 0,
+      movementY: event.movementY || 0,
+    });
+  } else {
+    queueClientIntertrialMovement(event.movementX || 0, event.movementY || 0);
+  }
 });
 
 document.addEventListener("mousedown", event => {
@@ -468,13 +637,24 @@ function showIntroduction() {
   const backendNotice = usesBrowserPointerLockBackend()
     ? "This Mac/Linux-compatible pilot mode uses browser Pointer Lock movement, not Windows Raw Input."
     : "This Windows mode uses the local Raw Input recorder for low-level mouse deltas.";
+  const cursorNotice = usesNativeWindowsCursorMode()
+    ? "A/B condition: the native Windows cursor is visible and authoritative for pointing; Raw Input counts are recorded separately."
+    : "A/B condition: the controlled virtual Windows-style cursor is visible.";
+  const startTargetEnabled = Boolean(state.experiment?.start_target_enabled);
   showOverlay({
     kicker: "Instructions",
-    title: "Point to the filled target",
+    title: startTargetEnabled
+      ? "Use the red start target, then point to the light-orange target"
+      : "Point to the filled target",
     paragraphs: [
       backendNotice,
-      "The random target is white. Your cursor is the small blue ring.",
-      "There is no center reference target: each new target starts from the cursor position left by the previous trial.",
+      cursorNotice,
+      startTargetEnabled
+        ? "Each task begins with a red start target. Click it to set the exact sampled starting position."
+        : "The random target is light orange. Your cursor is the mouse arrow.",
+      startTargetEnabled
+        ? "After the red target is clicked, point to the light-orange task target. Your cursor is the mouse arrow."
+        : "There is no center reference target: you may move freely between trials, and each new target starts from the cursor's current position.",
       "Move as naturally as possible. The first left click ends each trial, even when it misses.",
       "The experiment starts in fullscreen for the 24 inch Full HD profile. Press Escape, P, or Pause to open the menu.",
     ],
@@ -484,8 +664,10 @@ function showIntroduction() {
 }
 
 function showBlockStart() {
+  disableIntertrialMotion("block_screen");
   document.exitPointerLock?.();
   const cpi = state.cpiOrder[state.blockIndex];
+  state.cpiConfirmed = false;
   showOverlay({
     kicker: `Block ${state.blockIndex + 1} of ${state.cpiOrder.length}`,
     title: `Set the mouse to ${cpi} CPI`,
@@ -494,9 +676,18 @@ function showBlockStart() {
       "Do not change the Windows pointer speed or acceleration setting between blocks.",
       `${state.experiment.practice_trials_per_cpi} practice trials will come first.`,
     ],
-    button: `Start ${cpi} CPI practice`,
+    button: `Confirm ${cpi} CPI and start`,
     action: async () => {
       await acquirePointerLock();
+      await commitOverlayCursorPosition("block_start_button_click");
+      state.cpiConfirmed = true;
+      send({
+        type: "confirm_cpi",
+        cpi,
+        block_index: state.blockIndex + 1,
+        cpi_setting_method: state.cpiSettingMethod,
+        browser_ms: performance.now(),
+      });
       state.phase = "practice";
       state.phaseIndex = 0;
       state.attempt = 1;
@@ -561,8 +752,9 @@ function requestPause() {
 
 function showPauseMenu(statusMessage = null) {
   state.paused = true;
+  disableIntertrialMotion("pause_menu");
   clearScheduledTrial();
-  document.exitPointerLock?.();
+  exitPointerLockPreservingCursor("pause_menu");
   const fullscreenLabel = document.fullscreenElement ? "Exit fullscreen" : "Enter fullscreen";
   const paragraphs = [
     "No trial is currently being recorded.",
@@ -593,6 +785,7 @@ async function resumeFromPause() {
   state.pauseAfterInvalidation = false;
   logPauseEvent("pause_end");
   await acquirePointerLock();
+  await commitOverlayCursorPosition("resume_button_click");
   els.overlay.classList.add("hidden");
   scheduleTrial();
 }
@@ -608,11 +801,142 @@ function usesBrowserPointerLockBackend() {
   return state.inputBackend === "browser_pointer_lock";
 }
 
+function usesNativeWindowsCursorMode() {
+  return state.cursorPresentationMode === "native_windows";
+}
+
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+function requestOsCursorSync(reason) {
+  if (!state.session || !state.connected || usesNativeWindowsCursorMode()) return;
+  const dpr = window.devicePixelRatio || 1;
+  try {
+    send({
+      type: "sync_os_cursor_to_virtual",
+      reason,
+      screen_origin_x_px: Math.round(window.screenX * dpr),
+      screen_origin_y_px: Math.round(window.screenY * dpr),
+      browser_ms: performance.now(),
+    });
+  } catch (_) {}
+}
+
+function nativeScreenMappings() {
+  if (!usesNativeWindowsCursorMode()) return null;
+  const rect = els.canvas.getBoundingClientRect();
+  const transform = taskTransform();
+  const dpr = window.devicePixelRatio || 1;
+  const pointer = state.lastUiPointer;
+  const viewportOriginX = pointer
+    ? pointer.screenX - pointer.clientX
+    : window.screenX;
+  const viewportOriginY = pointer
+    ? pointer.screenY - pointer.clientY
+    : window.screenY;
+  const logicalOriginX = viewportOriginX + rect.left;
+  const logicalOriginY = viewportOriginY + rect.top;
+  return {
+    logical: {
+      basis: "logical",
+      screen_origin_x_px: logicalOriginX,
+      screen_origin_y_px: logicalOriginY,
+      task_offset_x_px: transform.offsetX / dpr,
+      task_offset_y_px: transform.offsetY / dpr,
+      task_scale_px_per_m: transform.scale / dpr,
+    },
+    physical: {
+      basis: "physical",
+      screen_origin_x_px: logicalOriginX * dpr,
+      screen_origin_y_px: logicalOriginY * dpr,
+      task_offset_x_px: transform.offsetX,
+      task_offset_y_px: transform.offsetY,
+      task_scale_px_per_m: transform.scale,
+    },
+  };
+}
+
+async function commitOverlayCursorPosition(reason) {
+  if (!Number.isFinite(state.lastCursorX) || !Number.isFinite(state.lastCursorY)) return false;
+  const requestId = `cursor-commit-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const acknowledgement = new Promise(resolve => {
+    const timeout = setTimeout(() => {
+      state.cursorCommitRequests.delete(requestId);
+      resolve(false);
+    }, 1500);
+    state.cursorCommitRequests.set(requestId, { resolve, timeout });
+  });
+  send({
+    type: "commit_overlay_cursor",
+    request_id: requestId,
+    cursor_x_m: state.lastCursorX,
+    cursor_y_m: state.lastCursorY,
+    source: reason,
+    native_screen_mappings: nativeScreenMappings(),
+    browser_ms: performance.now(),
+  });
+  const acknowledged = await acknowledgement;
+  requestOsCursorSync(reason);
+  return acknowledged;
+}
+
+function exitPointerLockPreservingCursor(reason) {
+  if (document.pointerLockElement !== els.canvas) {
+    document.exitPointerLock?.();
+    return;
+  }
+  let synchronized = false;
+  const synchronize = () => {
+    if (synchronized || document.pointerLockElement === els.canvas) return;
+    synchronized = true;
+    document.removeEventListener("pointerlockchange", synchronize);
+    requestOsCursorSync(reason);
+  };
+  document.addEventListener("pointerlockchange", synchronize);
+  document.exitPointerLock();
+  setTimeout(synchronize, 100);
+}
+
+function setInitialCursorFromFullscreenStartClick() {
+  if (state.initialTrialCursorSet) return;
+  const pointer = state.lastUiPointer;
+  if (!pointer || !state.session || !state.display || !state.appearance) return;
+  const rect = els.canvas.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return;
+  const canvasX = (pointer.clientX - rect.left) * (els.canvas.width / rect.width);
+  const canvasY = (pointer.clientY - rect.top) * (els.canvas.height / rect.height);
+  const transform = taskTransform();
+  const cursorX = clamp(
+    (canvasX - transform.offsetX) / transform.scale - transform.widthM / 2,
+    -transform.widthM / 2,
+    transform.widthM / 2
+  );
+  const cursorY = clamp(
+    transform.heightM / 2 - (canvasY - transform.offsetY) / transform.scale,
+    -transform.heightM / 2,
+    transform.heightM / 2
+  );
+  state.lastCursorX = cursorX;
+  state.lastCursorY = cursorY;
+  state.initialTrialCursorSet = true;
+  drawInterTrialCursor();
+  send({
+    type: "set_initial_cursor",
+    cursor_x_m: cursorX,
+    cursor_y_m: cursorY,
+    source: "first_fullscreen_start_button",
+    browser_ms: performance.now(),
+  });
+}
+
 async function acquirePointerLock() {
+  setInitialCursorFromFullscreenStartClick();
+  if (usesNativeWindowsCursorMode()) {
+    state.pointerLockRawRequested = false;
+    state.pointerLockRawGranted = false;
+    return;
+  }
   state.pointerLockRawRequested = true;
   state.pointerLockRawGranted = false;
   try {
@@ -685,6 +1009,44 @@ function queueClientInputEvent({ movementX = 0, movementY = 0, buttonFlags = 0, 
   }
 }
 
+function queueClientIntertrialMovement(movementX, movementY) {
+  if (
+    !usesBrowserPointerLockBackend()
+    || !state.intertrialMotionEnabled
+    || state.paused
+    || !state.cpiConfirmed
+  ) return;
+  if (movementX === 0 && movementY === 0) return;
+  const transform = taskTransform();
+  state.lastCursorX = clamp(
+    state.lastCursorX + movementX / transform.scale,
+    -transform.widthM / 2,
+    transform.widthM / 2
+  );
+  state.lastCursorY = clamp(
+    state.lastCursorY - movementY / transform.scale,
+    -transform.heightM / 2,
+    transform.heightM / 2
+  );
+  drawInterTrialCursor();
+  send({
+    type: "intertrial_client_input",
+    dx_counts: movementX,
+    dy_counts: movementY,
+    cursor_x_m: state.lastCursorX,
+    cursor_y_m: state.lastCursorY,
+    browser_ms: performance.now(),
+  });
+}
+
+function disableIntertrialMotion(reason) {
+  state.intertrialMotionEnabled = false;
+  if (!state.session || !state.connected) return;
+  try {
+    send({ type: "set_intertrial_motion", enabled: false, reason });
+  } catch (_) {}
+}
+
 function phaseTemplates() {
   const practiceCount = state.experiment.practice_trials_per_cpi;
   if (state.phase === "practice") return state.templates.slice(0, practiceCount);
@@ -697,12 +1059,17 @@ function scheduleTrial() {
   drawInterTrialCursor();
   state.nextTrialTimer = setTimeout(() => {
     state.nextTrialTimer = null;
-    beginTrial("task");
+    const initialStage = state.experiment?.start_target_enabled ? "start" : "task";
+    beginTrial(initialStage);
   }, state.experiment.inter_trial_s * 1000);
 }
 
 function beginTrial(trialStage = "task") {
   if (state.paused) return;
+  if (!state.cpiConfirmed) {
+    showFatal("The CPI condition was not confirmed for this block.");
+    return;
+  }
   const templates = phaseTemplates();
   const template = templates[state.phaseIndex];
   if (!template) return endPhase();
@@ -712,6 +1079,8 @@ function beginTrial(trialStage = "task") {
     phase: state.phase,
     trial_stage: trialStage,
     cpi: state.cpiOrder[state.blockIndex],
+    cpi_confirmed: state.cpiConfirmed,
+    cpi_setting_method: state.cpiSettingMethod,
     block_index: state.blockIndex + 1,
     attempt: state.attempt,
   });
@@ -720,6 +1089,7 @@ function beginTrial(trialStage = "task") {
 function onTrialReady(message) {
   const template = message.template;
   state.clientInputQueue = [];
+  state.intertrialMotionEnabled = false;
   if (state.clientInputFlushTimer != null) {
     clearTimeout(state.clientInputFlushTimer);
     state.clientInputFlushTimer = null;
@@ -760,6 +1130,10 @@ function animationFrame(timestamp) {
   if (!trial || !trial.recording) return;
   drawTask();
   const interval = trial.lastFrameMs == null ? 0 : timestamp - trial.lastFrameMs;
+  const nativePointer = usesNativeWindowsCursorMode() ? state.nativePointerVirtual : null;
+  const nativeAlignmentError = nativePointer
+    ? Math.hypot(nativePointer.x - trial.cursorX, nativePointer.y - trial.cursorY)
+    : null;
   trial.frames.push({
     browser_ms: timestamp,
     interval_ms: interval,
@@ -770,6 +1144,9 @@ function animationFrame(timestamp) {
     focused: document.hasFocus(),
     visible: document.visibilityState === "visible",
     pointer_locked: document.pointerLockElement === els.canvas,
+    native_cursor_x_m: nativePointer?.x ?? null,
+    native_cursor_y_m: nativePointer?.y ?? null,
+    native_alignment_error_m: nativeAlignmentError,
   });
   trial.rawSinceFrame = 0;
   trial.lastFrameMs = timestamp;
@@ -792,6 +1169,22 @@ function onRawBatch(message) {
   }
 }
 
+function onIntertrialCursor(message) {
+  if (!Number.isFinite(message.cursor_x_m) || !Number.isFinite(message.cursor_y_m)) return;
+  state.lastCursorX = message.cursor_x_m;
+  state.lastCursorY = message.cursor_y_m;
+  if (!state.current?.active) drawInterTrialCursor();
+}
+
+function onOverlayCursorCommitted(message) {
+  onIntertrialCursor(message);
+  const pending = state.cursorCommitRequests.get(message.request_id);
+  if (!pending) return;
+  clearTimeout(pending.timeout);
+  state.cursorCommitRequests.delete(message.request_id);
+  pending.resolve(true);
+}
+
 function onTrialResult(message) {
   const trial = state.current;
   if (!trial || trial.trialId !== message.trial_id) return;
@@ -801,6 +1194,7 @@ function onTrialResult(message) {
   trial.valid = message.valid;
   trial.trialStage = message.trial_stage || trial.trialStage || "task";
   trial.endMs = performance.now();
+  state.intertrialMotionEnabled = trial.trialStage === "task";
   trial.cursorX = Number.isFinite(message.cursor_x_m) ? message.cursor_x_m : trial.cursorX;
   trial.cursorY = Number.isFinite(message.cursor_y_m) ? message.cursor_y_m : trial.cursorY;
   state.lastCursorX = trial.cursorX;
@@ -815,6 +1209,7 @@ function onTrialResult(message) {
     frames: trial.frames,
     client: {
       input_backend: state.inputBackend,
+      cursor_presentation_mode: state.cursorPresentationMode,
       time_origin_ms: performance.timeOrigin,
       first_movement_ms: trial.firstMovementMs,
       click_ms: trial.clickMs,
@@ -869,7 +1264,7 @@ function onTrialSaved(message) {
       }
       state.attempt += 1;
       if (!valid) {
-        document.exitPointerLock?.();
+        exitPointerLockPreservingCursor("invalid_start_trial");
         showOverlay({
           kicker: "Trial invalidated",
           title: "The trial will be repeated",
@@ -877,6 +1272,7 @@ function onTrialSaved(message) {
           button: "Repeat trial",
           action: async () => {
             await acquirePointerLock();
+            await commitOverlayCursorPosition("repeat_start_trial_button_click");
             els.overlay.classList.add("hidden");
             scheduleTrial();
           },
@@ -899,7 +1295,7 @@ function onTrialSaved(message) {
       return;
     }
     if (!valid) {
-      document.exitPointerLock?.();
+      exitPointerLockPreservingCursor("invalid_task_trial");
       showOverlay({
         kicker: "Trial invalidated",
         title: "The trial will be repeated",
@@ -907,6 +1303,7 @@ function onTrialSaved(message) {
         button: "Repeat trial",
         action: async () => {
           await acquirePointerLock();
+          await commitOverlayCursorPosition("repeat_task_trial_button_click");
           els.overlay.classList.add("hidden");
           scheduleTrial();
         },
@@ -918,7 +1315,8 @@ function onTrialSaved(message) {
 }
 
 function endPhase() {
-  document.exitPointerLock?.();
+  disableIntertrialMotion("phase_complete");
+  exitPointerLockPreservingCursor("phase_complete");
   if (state.phase === "practice") {
     showOverlay({
       kicker: `${state.cpiOrder[state.blockIndex]} CPI`,
@@ -926,10 +1324,12 @@ function endPhase() {
       paragraphs: [
         `The ${state.experiment.measured_trials_per_cpi} recorded trials will now begin.`,
         "Take a short break if needed, but keep the CPI setting unchanged.",
+        "The same cursor remains active on this screen. The next trial starts exactly where you click the button.",
       ],
       button: "Begin recorded trials",
       action: async () => {
         await acquirePointerLock();
+        await commitOverlayCursorPosition("measured_phase_start_button_click");
         state.phase = "measured";
         state.phaseIndex = 0;
         state.attempt = 1;
@@ -945,6 +1345,7 @@ function endPhase() {
 }
 
 function showFinished(message = {}) {
+  disableIntertrialMotion("session_complete");
   document.exitPointerLock?.();
   clearScheduledTrial();
   const aborted = Boolean(message.aborted);
@@ -986,24 +1387,32 @@ function resetToSetup() {
     attempt: 1,
     current: null,
     waitingForSave: false,
+    intertrialMotionEnabled: false,
     pointerLockRawRequested: false,
     pointerLockRawGranted: false,
+    initialTrialCursorSet: false,
     overlayActions: { primary: null, secondary: null, danger: null },
+    cursorCommitRequests: new Map(),
     nextTrialTimer: null,
     paused: false,
     pauseAfterInvalidation: false,
     background: "rgb(24, 27, 33)",
     displayCalibration: null,
     inputBackend: "windows_raw_input",
+    cursorPresentationMode: "virtual_raw_input",
     clientInputQueue: [],
     clientInputFlushTimer: null,
     lastCursorX: 0,
     lastCursorY: 0,
+    lastUiPointer: null,
+    nativePointerVirtual: null,
   });
   els.fatal.classList.add("hidden");
   els.fatal.textContent = "";
   els.setupError.textContent = "";
   els.overlay.classList.add("hidden");
+  els.uiCursor.classList.add("hidden");
+  els.experiment.classList.remove("native-windows-cursor");
   els.experiment.classList.add("hidden");
   els.setup.classList.remove("hidden");
   els.start.disabled = !state.connected;
@@ -1100,15 +1509,99 @@ function clearCanvas() {
   ctx.fillRect(0, 0, els.canvas.width, els.canvas.height);
 }
 
+function phaseTrialProgress() {
+  if (!state.experiment || !["practice", "measured"].includes(state.phase)) return null;
+  const total = Number(
+    state.phase === "practice"
+      ? state.experiment.practice_trials_per_cpi
+      : state.experiment.measured_trials_per_cpi
+  );
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return {
+    current: Math.min(total, Math.max(1, Number(state.phaseIndex) + 1)),
+    total,
+  };
+}
+
+function drawPhaseTrialCounter() {
+  const progress = phaseTrialProgress();
+  if (!progress || !state.appearance) return;
+  const dpr = window.devicePixelRatio || 1;
+  const fontSize = Number(state.appearance.phase_counter_font_px ?? 14) * dpr;
+  const margin = Number(state.appearance.phase_counter_margin_px ?? 18) * dpr;
+  const color = state.appearance.phase_counter_rgb || [230, 232, 236];
+  const alpha = Number(state.appearance.phase_counter_alpha ?? 0.48);
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, Math.max(0, alpha));
+  ctx.fillStyle = `rgb(${color.join(",")})`;
+  ctx.font = `400 ${fontSize}px "Segoe UI", sans-serif`;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "top";
+  ctx.fillText(`${progress.current} / ${progress.total}`, els.canvas.width - margin, margin);
+  ctx.restore();
+}
+
 function drawCursor(cursorX, cursorY) {
+  if (usesNativeWindowsCursorMode()) return;
   const cursor = pointToCanvas(cursorX, cursorY);
   const dpr = window.devicePixelRatio || 1;
+  const style = state.appearance.cursor_style ?? "arrow";
+  const x = cursor[0];
+  const y = cursor[1];
+
+  if (style === "aero_arrow" && aeroArrowCursor.complete) {
+    const configuredSize = state.appearance.cursor_bitmap_size_px ?? [32, 32];
+    const width = Math.max(1, Number(configuredSize[0] ?? 32) * dpr);
+    const height = Math.max(1, Number(configuredSize[1] ?? 32) * dpr);
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(aeroArrowCursor, x, y, width, height);
+    ctx.restore();
+    return;
+  }
+
+  if (style === "arrow" || style === "aero_arrow") {
+    const width = Math.max(6, Number(state.appearance.cursor_arrow_width_px ?? 12) * dpr);
+    const height = Math.max(10, Number(state.appearance.cursor_arrow_height_px ?? 18) * dpr);
+    const outline = Math.max(1, Number(state.appearance.cursor_arrow_outline_px ?? 1) * dpr);
+    // Compact classic Windows cursor. The first point remains the cursor
+    // hotspot, independently of the visible polygon.
+    const points = [
+      [x, y],
+      [x, y + height * 0.78],
+      [x + width * 0.28, y + height * 0.62],
+      [x + width * 0.53, y + height],
+      [x + width * 0.75, y + height * 0.91],
+      [x + width * 0.48, y + height * 0.58],
+      [x + width, y + height * 0.58],
+    ];
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (const point of points.slice(1)) ctx.lineTo(point[0], point[1]);
+    ctx.closePath();
+    ctx.fillStyle = `rgb(${state.appearance.cursor_rgb.join(",")})`;
+    ctx.strokeStyle = `rgb(${(state.appearance.cursor_outline_rgb || [32, 32, 32]).join(",")})`;
+    ctx.lineWidth = outline;
+    ctx.lineJoin = "round";
+    const shadow = state.appearance.cursor_shadow_rgb || [0, 0, 0];
+    const shadowAlpha = Number(state.appearance.cursor_shadow_alpha ?? 80) / 255;
+    const shadowOffset = Number(state.appearance.cursor_shadow_offset_px ?? 1) * dpr;
+    ctx.shadowColor = `rgba(${shadow.join(",")},${shadowAlpha})`;
+    ctx.shadowOffsetX = shadowOffset;
+    ctx.shadowOffsetY = shadowOffset;
+    ctx.shadowBlur = 1.25 * dpr;
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
   const gap = Number(state.appearance.cursor_crosshair_gap_px ?? 18) * dpr;
   const length = Number(state.appearance.cursor_crosshair_length_px ?? 60) * dpr;
   const thickness = Math.max(1, Number(state.appearance.cursor_line_width_px ?? 8) * dpr);
   const centerSize = Math.max(1, Number(state.appearance.cursor_crosshair_center_px ?? thickness) * dpr);
-  const x = cursor[0];
-  const y = cursor[1];
   const rects = [
     [x - gap - length, y - thickness / 2, length, thickness],
     [x + gap, y - thickness / 2, length, thickness],
@@ -1124,6 +1617,8 @@ function drawCursor(cursorX, cursorY) {
 
 function drawInterTrialCursor() {
   clearCanvas();
+  if (!els.overlay.classList.contains("hidden")) return;
+  drawPhaseTrialCounter();
   if (!state.appearance || !Number.isFinite(state.lastCursorX) || !Number.isFinite(state.lastCursorY)) {
     return;
   }
@@ -1143,6 +1638,7 @@ function drawTask(feedback = null) {
   ctx.beginPath();
   ctx.arc(target[0], target[1], geometry.radiusPx, 0, Math.PI * 2);
   ctx.fill();
+  drawPhaseTrialCounter();
   drawCursor(trial.cursorX, trial.cursorY);
 }
 
@@ -1153,6 +1649,7 @@ function invalidateIfActive(reason) {
 }
 
 document.addEventListener("pointerlockchange", () => {
+  updateCustomCursorVisibility();
   if (document.pointerLockElement !== els.canvas && state.current?.active && !state.paused) {
     requestPause();
   }
@@ -1162,6 +1659,7 @@ document.addEventListener("fullscreenchange", () => {
     requestPause();
   }
   resizeCanvas();
+  updateCustomCursorVisibility();
 });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") invalidateIfActive("visibility_lost");
@@ -1170,6 +1668,7 @@ window.addEventListener("blur", () => invalidateIfActive("focus_lost"));
 window.addEventListener("resize", () => {
   if (state.current?.active) invalidateIfActive("window_resized");
   resizeCanvas();
+  updateCustomCursorVisibility();
 });
 
 applyFixedDisplayProfile();
